@@ -14,13 +14,14 @@ Das Tool liest nur den Bildschirm und sendet normale Windows-Medientasten. Es gr
 ## Start
 
 1. `start_valorant_media_guard.bat` doppelklicken.
-2. Den passenden Tab auswaehlen: `Valorant` oder `LoL`.
-3. Im Spiel am besten `Fenster-Vollbild` oder `Randlos` nutzen, falls Screenshots bei exklusivem Vollbild schwarz bleiben.
-4. `Bereich waehlen` klicken und den Bereich markieren, in dem die rote Anzeige oder die LoL-Zahl erscheinen soll.
-5. Unter `Medienwiedergabe` auf `Aktualisieren` klicken und z. B. Spotify, Browser oder Player auswaehlen.
-6. Entweder `Play/Pause steuern` oder `Nur Lautstaerke anpassen` waehlen.
-7. Bei Lautstaerke-Modus `Tot %` und `Nicht tot %` eintragen und mit `Test Tot` / `Test Nicht tot` pruefen.
-8. `Start` klicken.
+2. Wenn Python fehlt, fragt die Startdatei, ob Python installiert werden soll.
+3. Den passenden Tab auswaehlen: `Valorant` oder `LoL`.
+4. Im Spiel am besten `Fenster-Vollbild` oder `Randlos` nutzen, falls Screenshots bei exklusivem Vollbild schwarz bleiben.
+5. `Bereich waehlen` klicken und den Bereich markieren, in dem die rote Anzeige oder die LoL-Zahl erscheinen soll.
+6. Unter `Medienwiedergabe` auf `Aktualisieren` klicken und z. B. Spotify, Browser oder Player auswaehlen.
+7. Entweder `Play/Pause steuern` oder `Nur Lautstaerke anpassen` waehlen.
+8. Bei Lautstaerke-Modus `Tot %` und `Nicht tot %` eintragen und mit `Test Tot` / `Test Nicht tot` pruefen.
+9. `Start` klicken.
 
 ## Valorant-Tipps
 
@@ -40,8 +41,8 @@ Das Tool liest nur den Bildschirm und sendet normale Windows-Medientasten. Es gr
 
 - Oben im Programm steht die installierte Version und die neueste Version auf GitHub.
 - Wenn GitHub neuer ist, erscheint der Button `Jetzt aktualisieren`.
-- Das Update laeuft ueber `git pull --ff-only`; danach die App neu starten.
-- Wenn Git nicht installiert ist, oeffnet der Update-Button GitHub im Browser.
+- Das Update laedt ein ZIP von GitHub und ersetzt nur die Programmdateien; danach die App neu starten.
+- Git muss fuer normale Nutzer nicht installiert sein.
 - Das GIF `Gangcord.gif` wird im Fenster sichtbar angezeigt, `logo der app.png` wird als App-Logo genutzt.
 - Valorant und LoL speichern Bereich, Ziel, Modus und Lautstaerke getrennt.
 - Wenn die Erkennung wackelt, waehle einen kleineren, klareren Bereich.

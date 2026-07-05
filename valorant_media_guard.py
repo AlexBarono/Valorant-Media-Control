@@ -2,7 +2,9 @@ import ctypes
 import json
 import os
 import queue
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import tkinter as tk
@@ -10,12 +12,13 @@ import urllib.error
 import urllib.request
 import uuid
 import webbrowser
+import zipfile
 from tkinter import messagebox, ttk
 from ctypes import wintypes
 
 
 APP_NAME = "Game Media Guard"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 README_PATH = os.path.join(APP_DIR, "README.md")
@@ -26,7 +29,15 @@ GITHUB_REPO = "AlexBarono/Valorant-Media-Control"
 GITHUB_REPO_URL = f"https://github.com/{GITHUB_REPO}"
 GITHUB_RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_COMMIT_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/commits/HEAD"
+GITHUB_RAW_APP_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/valorant_media_guard.py"
 GITHUB_DOWNLOAD_URL = f"{GITHUB_REPO_URL}/archive/refs/heads/main.zip"
+UPDATE_FILES = (
+    "valorant_media_guard.py",
+    "start_valorant_media_guard.bat",
+    "README.md",
+    "Gangcord.gif",
+    "logo der app.png",
+)
 
 SRCCOPY = 0x00CC0020
 DIB_RGB_COLORS = 0
@@ -515,6 +526,38 @@ def normalize_version(value):
     return str(value or "").strip().lower().lstrip("v")
 
 
+def version_parts(value):
+    parts = []
+    current = ""
+    for char in normalize_version(value):
+        if char.isdigit():
+            current += char
+        elif current:
+            parts.append(int(current))
+            current = ""
+    if current:
+        parts.append(int(current))
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+
+def is_version_newer(remote_version, local_version):
+    return version_parts(remote_version) > version_parts(local_version)
+
+
+def extract_app_version(source_text):
+    marker = 'APP_VERSION = "'
+    start = source_text.find(marker)
+    if start < 0:
+        return ""
+    start += len(marker)
+    end = source_text.find('"', start)
+    if end < 0:
+        return ""
+    return source_text[start:end]
+
+
 def is_git_available():
     try:
         run_git_command("--version", timeout=5)
@@ -523,21 +566,67 @@ def is_git_available():
         return False
 
 
-def fetch_latest_release_info():
+def powershell_quote(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def read_url_text(url, timeout=8):
     request = urllib.request.Request(
-        GITHUB_RELEASE_API_URL,
+        url,
         headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=8) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             if response.status != 200:
                 return None
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
+            return response.read().decode("utf-8", errors="replace")
+    except Exception:
+        command = (
+            "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; "
+            f"(Invoke-WebRequest -UseBasicParsing -Uri {powershell_quote(url)} -TimeoutSec {int(timeout) + 5}).Content"
+        )
+        try:
+            return subprocess.check_output(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+                text=True,
+                stderr=subprocess.STDOUT,
+                timeout=timeout + 10,
+            )
+        except Exception:
             return None
-        raise
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+
+
+def download_url_to_file(url, target_path, timeout=45):
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            with open(target_path, "wb") as handle:
+                shutil.copyfileobj(response, handle)
+        return
+    except Exception:
+        command = (
+            "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; "
+            f"Invoke-WebRequest -UseBasicParsing -Uri {powershell_quote(url)} "
+            f"-OutFile {powershell_quote(target_path)} -TimeoutSec {int(timeout)}"
+        )
+        subprocess.check_call(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+            timeout=timeout + 15,
+        )
+
+
+def fetch_latest_release_info():
+    response_text = read_url_text(GITHUB_RELEASE_API_URL, timeout=8)
+    if not response_text:
+        return None
+    try:
+        data = json.loads(response_text)
+    except json.JSONDecodeError:
         return None
 
     tag_name = data.get("tag_name")
@@ -547,21 +636,45 @@ def fetch_latest_release_info():
         "kind": "release",
         "latest": tag_name,
         "url": data.get("html_url", GITHUB_REPO_URL),
-        "available": normalize_version(tag_name) != normalize_version(APP_VERSION),
+        "available": is_version_newer(tag_name, APP_VERSION),
+    }
+
+
+def fetch_latest_raw_version_info():
+    source_text = read_url_text(GITHUB_RAW_APP_URL, timeout=8)
+    if not source_text:
+        return None
+
+    remote_version = extract_app_version(source_text)
+    if not remote_version:
+        return None
+
+    available = is_version_newer(remote_version, APP_VERSION)
+    if available:
+        status = "Neue Version auf GitHub gefunden."
+    elif version_parts(remote_version) == version_parts(APP_VERSION):
+        status = "Du hast die neueste Version."
+    else:
+        status = "Lokale Version ist neuer als GitHub."
+
+    return {
+        "kind": "raw_version",
+        "latest": f"v{remote_version}",
+        "url": GITHUB_REPO_URL,
+        "download_url": GITHUB_DOWNLOAD_URL,
+        "available": available,
+        "manual_update": False,
+        "status": status,
     }
 
 
 def fetch_latest_api_head_info():
-    request = urllib.request.Request(
-        GITHUB_COMMIT_API_URL,
-        headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"},
-    )
+    response_text = read_url_text(GITHUB_COMMIT_API_URL, timeout=8)
+    if not response_text:
+        return None
     try:
-        with urllib.request.urlopen(request, timeout=8) as response:
-            if response.status != 200:
-                return None
-            data = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        data = json.loads(response_text)
+    except json.JSONDecodeError:
         return None
 
     remote_commit = data.get("sha", "")
@@ -574,7 +687,7 @@ def fetch_latest_api_head_info():
         status = "Neue GitHub-Version gefunden." if available else "Du hast die neueste Version."
     else:
         available = False
-        status = "GitHub erreichbar. Fuer Auto-Update muss Git installiert sein."
+        status = "GitHub erreichbar. Updates werden per ZIP geladen."
 
     return {
         "kind": "api_commit",
@@ -583,7 +696,7 @@ def fetch_latest_api_head_info():
         "url": GITHUB_REPO_URL,
         "download_url": GITHUB_DOWNLOAD_URL,
         "available": available,
-        "manual_update": not current_commit,
+        "manual_update": False,
         "status": status,
     }
 
@@ -612,6 +725,10 @@ def fetch_latest_version_info():
     if release_info:
         return release_info
 
+    raw_version_info = fetch_latest_raw_version_info()
+    if raw_version_info:
+        return raw_version_info
+
     api_info = fetch_latest_api_head_info()
     if api_info:
         return api_info
@@ -626,7 +743,7 @@ def fetch_latest_version_info():
         "download_url": GITHUB_DOWNLOAD_URL,
         "available": False,
         "manual_update": True,
-        "status": "Git ist nicht installiert. GitHub kann im Browser geoeffnet werden.",
+        "status": "GitHub kann im Browser geoeffnet werden.",
     }
 
 
@@ -635,6 +752,38 @@ def pull_latest_version():
         return run_git_command("pull", "--ff-only", timeout=60)
     except subprocess.CalledProcessError:
         return run_git_command("pull", "--ff-only", "origin", "HEAD", timeout=60)
+
+
+def download_and_apply_zip_update():
+    with tempfile.TemporaryDirectory(prefix="game_media_guard_update_") as temp_dir:
+        zip_path = os.path.join(temp_dir, "update.zip")
+        download_url_to_file(GITHUB_DOWNLOAD_URL, zip_path, timeout=45)
+
+        extract_dir = os.path.join(temp_dir, "extract")
+        with zipfile.ZipFile(zip_path) as archive:
+            archive.extractall(extract_dir)
+
+        roots = [
+            os.path.join(extract_dir, name)
+            for name in os.listdir(extract_dir)
+            if os.path.isdir(os.path.join(extract_dir, name))
+        ]
+        if not roots:
+            raise RuntimeError("Update-ZIP enthaelt keinen Projektordner.")
+        source_root = roots[0]
+
+        updated = []
+        for file_name in UPDATE_FILES:
+            source_path = os.path.join(source_root, file_name)
+            target_path = os.path.join(APP_DIR, file_name)
+            if os.path.exists(source_path):
+                shutil.copy2(source_path, target_path)
+                updated.append(file_name)
+
+        if not updated:
+            raise RuntimeError("Update-ZIP enthaelt keine bekannten Programmdateien.")
+
+        return "Aktualisiert: " + ", ".join(updated)
 
 
 def get_virtual_screen():
@@ -1096,7 +1245,7 @@ class App(tk.Tk):
         self.build_readme_tab(readme_tab)
 
     def build_hero(self, parent):
-        self.hero_canvas = tk.Canvas(parent, height=230, highlightthickness=0, bd=0, bg="black")
+        self.hero_canvas = tk.Canvas(parent, height=160, highlightthickness=0, bd=0, bg="black")
         self.hero_canvas.grid(row=0, column=0, sticky="ew")
         self.update_button = ttk.Button(self.hero_canvas, textvariable=self.update_button_text_var, command=self.update_button_clicked)
         self.hero_canvas.bind("<Configure>", lambda _event: self.draw_hero())
@@ -1146,15 +1295,15 @@ class App(tk.Tk):
             36,
             anchor="nw",
             fill="white",
-            font=("Segoe UI", 22, "bold"),
+            font=("Segoe UI", 18, "bold"),
             text=APP_NAME,
         )
         canvas.create_text(
             left,
-            94,
+            82,
             anchor="nw",
             fill="white",
-            font=("Segoe UI", 12),
+            font=("Segoe UI", 10),
             width=min(620, max(260, width - 420)),
             text=(
                 "Automatische Mediensteuerung fuer Valorant und League of Legends: "
@@ -1173,7 +1322,7 @@ class App(tk.Tk):
         )
         canvas.create_text(
             version_x,
-            58,
+            56,
             anchor="nw",
             fill="white",
             font=("Segoe UI", 10),
@@ -1181,7 +1330,7 @@ class App(tk.Tk):
         )
         canvas.create_text(
             version_x,
-            116,
+            96,
             anchor="nw",
             fill="white",
             font=("Segoe UI", 10),
@@ -1277,13 +1426,11 @@ class App(tk.Tk):
         self.manual_update_url = None
 
         manual_update = bool(info.get("manual_update"))
-        if self.update_available and not is_git_available():
-            manual_update = True
 
         if manual_update:
             self.manual_update_url = info.get("download_url") or info.get("url") or GITHUB_REPO_URL
             self.update_button_text_var.set("GitHub oeffnen")
-            self.update_status_var.set(info.get("status", "Auto-Update braucht Git."))
+            self.update_status_var.set(info.get("status", "GitHub kann im Browser geoeffnet werden."))
         elif self.update_available:
             self.update_button_text_var.set("Jetzt aktualisieren")
             self.update_status_var.set(info.get("status", "Neue Version auf GitHub gefunden."))
@@ -1296,14 +1443,14 @@ class App(tk.Tk):
             return
         self.update_check_running = True
         self.update_button_text_var.set("Aktualisiert...")
-        self.update_status_var.set("Update wird von GitHub geladen...")
+        self.update_status_var.set("Update-ZIP wird von GitHub geladen...")
         if self.update_button:
             self.update_button.configure(state="disabled")
         threading.Thread(target=self.install_update_worker, daemon=True).start()
 
     def install_update_worker(self):
         try:
-            output = pull_latest_version()
+            output = download_and_apply_zip_update()
             self.events.put(("update_install", True, output or "Update abgeschlossen."))
         except subprocess.CalledProcessError as exc:
             message = exc.output.strip() if exc.output else str(exc)
