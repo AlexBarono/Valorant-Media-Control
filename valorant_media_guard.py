@@ -526,6 +526,8 @@ def fetch_latest_release_info():
         if exc.code == 404:
             return None
         raise
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return None
 
     tag_name = data.get("tag_name")
     if not tag_name:
@@ -555,7 +557,10 @@ def fetch_latest_remote_head_info():
 
 
 def fetch_latest_version_info():
-    release_info = fetch_latest_release_info()
+    try:
+        release_info = fetch_latest_release_info()
+    except Exception:
+        release_info = None
     if release_info:
         return release_info
     return fetch_latest_remote_head_info()
@@ -904,6 +909,10 @@ class App(tk.Tk):
         self.logo_image = None
         self.logo_header_image = None
         self.banner_image = None
+        self.hero_cover_image = None
+        self.hero_cover_zoom = None
+        self.hero_canvas = None
+        self.hero_update_window = None
         self.update_available = False
         self.update_check_running = False
         self.update_status_var = tk.StringVar(value="Update noch nicht geprueft.")
@@ -911,6 +920,8 @@ class App(tk.Tk):
         self.latest_version_var = tk.StringVar(value="-")
         self.update_button_text_var = tk.StringVar(value="Update pruefen")
         self.update_button = None
+        for variable in (self.update_status_var, self.current_version_var, self.latest_version_var):
+            variable.trace_add("write", lambda *_args: self.draw_hero())
 
         self.region_var = tk.StringVar()
         self.red_settings_var = tk.StringVar()
@@ -977,7 +988,7 @@ class App(tk.Tk):
                 self.background_frames.append(frame)
                 index += 1
             if self.background_frames:
-                self.banner_image = self.background_frames[0].subsample(2, 2)
+                self.banner_image = self.background_frames[0]
 
     def create_background(self):
         self.configure(bg="black")
@@ -998,31 +1009,15 @@ class App(tk.Tk):
         self.after(90, self.animate_background)
 
     def build_ui(self):
-        root = ttk.Frame(self, padding=18)
+        root = ttk.Frame(self)
         root.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.94, relheight=0.92)
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(3, weight=1)
+        root.rowconfigure(1, weight=1)
 
-        header = ttk.Frame(root)
-        header.grid(row=0, column=0, sticky="ew")
-        header.columnconfigure(1, weight=1)
-        if self.logo_header_image:
-            ttk.Label(header, image=self.logo_header_image).grid(row=0, column=0, sticky="w", padx=(0, 10))
-        title = ttk.Label(header, text=APP_NAME, font=("Segoe UI", 18, "bold"))
-        title.grid(row=0, column=1, sticky="w")
-        self.build_version_panel(header)
-
-        subtitle = ttk.Label(
-            root,
-            text="Valorant und LoL haben getrennte Bereiche, Medienziele und Lautstaerke-Einstellungen.",
-            wraplength=680,
-        )
-        subtitle.grid(row=1, column=0, sticky="w", pady=(2, 14))
-
-        self.build_gif_banner(root)
+        self.build_hero(root)
 
         notebook = ttk.Notebook(root)
-        notebook.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
+        notebook.grid(row=1, column=0, sticky="nsew", padx=18, pady=(12, 18))
 
         valorant_tab = ttk.Frame(notebook, padding=12)
         lol_tab = ttk.Frame(notebook, padding=12)
@@ -1035,38 +1030,105 @@ class App(tk.Tk):
         self.build_lol_tab(lol_tab)
         self.build_readme_tab(readme_tab)
 
-    def build_version_panel(self, parent):
-        version = ttk.Frame(parent)
-        version.grid(row=0, column=2, sticky="e")
-        version.columnconfigure(1, weight=1)
-        ttk.Label(version, text="Aktuell:").grid(row=0, column=0, sticky="e", padx=(0, 4))
-        ttk.Label(version, textvariable=self.current_version_var).grid(row=0, column=1, sticky="w")
-        ttk.Label(version, text="Neueste:").grid(row=1, column=0, sticky="e", padx=(0, 4))
-        ttk.Label(version, textvariable=self.latest_version_var).grid(row=1, column=1, sticky="w")
-        self.update_button = ttk.Button(version, textvariable=self.update_button_text_var, command=self.update_button_clicked)
-        self.update_button.grid(
-            row=0,
-            column=2,
-            rowspan=2,
-            sticky="e",
-            padx=(12, 0),
+    def build_hero(self, parent):
+        self.hero_canvas = tk.Canvas(parent, height=230, highlightthickness=0, bd=0, bg="black")
+        self.hero_canvas.grid(row=0, column=0, sticky="ew")
+        self.update_button = ttk.Button(self.hero_canvas, textvariable=self.update_button_text_var, command=self.update_button_clicked)
+        self.hero_canvas.bind("<Configure>", lambda _event: self.draw_hero())
+        self.draw_hero()
+
+    def draw_hero(self):
+        if not self.hero_canvas:
+            return
+
+        canvas = self.hero_canvas
+        width = max(canvas.winfo_width(), 1)
+        height = max(canvas.winfo_height(), 1)
+        canvas.delete("all")
+
+        if self.banner_image:
+            image_width = self.banner_image.width()
+            image_height = self.banner_image.height()
+            zoom = max(
+                1,
+                (width + image_width - 1) // image_width,
+                (height + image_height - 1) // image_height,
+            )
+            if self.hero_cover_zoom != zoom:
+                self.hero_cover_image = self.banner_image.zoom(zoom, zoom)
+                self.hero_cover_zoom = zoom
+            image = self.hero_cover_image
+            canvas.create_image(
+                (width - image.width()) // 2,
+                (height - image.height()) // 2,
+                image=image,
+                anchor="nw",
+            )
+        else:
+            canvas.create_rectangle(0, 0, width, height, fill="#050505", outline="")
+
+        canvas.create_rectangle(0, 0, width, height, fill="#000000", stipple="gray50", outline="")
+
+        left = 28
+        if self.logo_header_image:
+            canvas.create_image(left, 34, image=self.logo_header_image, anchor="nw")
+            text_left = left + self.logo_header_image.width() + 16
+        else:
+            text_left = left
+
+        canvas.create_text(
+            text_left,
+            36,
+            anchor="nw",
+            fill="white",
+            font=("Segoe UI", 22, "bold"),
+            text=APP_NAME,
         )
-        ttk.Label(version, textvariable=self.update_status_var, wraplength=220).grid(
-            row=2,
-            column=0,
-            columnspan=3,
-            sticky="e",
-            pady=(4, 0),
+        canvas.create_text(
+            left,
+            94,
+            anchor="nw",
+            fill="white",
+            font=("Segoe UI", 12),
+            width=min(620, max(260, width - 420)),
+            text=(
+                "Automatische Mediensteuerung fuer Valorant und League of Legends: "
+                "Bereich markieren, Zustand erkennen und Musik per Play/Pause oder Lautstaerke regeln."
+            ),
         )
 
-    def build_gif_banner(self, parent):
-        banner = ttk.Frame(parent)
-        banner.grid(row=2, column=0, sticky="ew")
-        banner.columnconfigure(0, weight=1)
-        if self.banner_image:
-            ttk.Label(banner, image=self.banner_image).grid(row=0, column=0)
-        else:
-            ttk.Label(banner, text="Gangcord.gif nicht gefunden.").grid(row=0, column=0, sticky="w")
+        version_x = max(width - 310, left)
+        canvas.create_text(
+            version_x,
+            34,
+            anchor="nw",
+            fill="white",
+            font=("Segoe UI", 10),
+            text=f"Aktuell: {self.current_version_var.get()}",
+        )
+        canvas.create_text(
+            version_x,
+            58,
+            anchor="nw",
+            fill="white",
+            font=("Segoe UI", 10),
+            text=f"Neueste: {self.latest_version_var.get()}",
+        )
+        canvas.create_text(
+            version_x,
+            116,
+            anchor="nw",
+            fill="white",
+            font=("Segoe UI", 10),
+            width=270,
+            text=self.update_status_var.get(),
+        )
+        self.hero_update_window = canvas.create_window(
+            version_x + 170,
+            32,
+            anchor="nw",
+            window=self.update_button,
+        )
 
     def build_readme_tab(self, parent):
         parent.columnconfigure(0, weight=1)

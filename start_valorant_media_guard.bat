@@ -1,11 +1,21 @@
 @echo off
 cd /d "%~dp0"
 
-where py >nul 2>nul
+where pyw >nul 2>nul
 if %errorlevel%==0 (
-    py -3 valorant_media_guard.py
+    start "" pyw -3 "%~dp0valorant_media_guard.py"
 ) else (
-    python valorant_media_guard.py
+    where pythonw >nul 2>nul
+    if %errorlevel%==0 (
+        start "" pythonw "%~dp0valorant_media_guard.py"
+    ) else (
+        where py >nul 2>nul
+        if %errorlevel%==0 (
+            start "" py -3 "%~dp0valorant_media_guard.py"
+        ) else (
+            start "" python "%~dp0valorant_media_guard.py"
+        )
+    )
 )
 
-pause
+exit /b 0
