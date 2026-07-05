@@ -41,6 +41,7 @@ Das Tool liest nur den Bildschirm und sendet normale Windows-Medientasten. Es gr
 - Oben im Programm steht die installierte Version und die neueste Version auf GitHub.
 - Wenn GitHub neuer ist, erscheint der Button `Jetzt aktualisieren`.
 - Das Update laeuft ueber `git pull --ff-only`; danach die App neu starten.
+- Wenn Git nicht installiert ist, oeffnet der Update-Button GitHub im Browser.
 - Das GIF `Gangcord.gif` wird im Fenster sichtbar angezeigt, `logo der app.png` wird als App-Logo genutzt.
 - Valorant und LoL speichern Bereich, Ziel, Modus und Lautstaerke getrennt.
 - Wenn die Erkennung wackelt, waehle einen kleineren, klareren Bereich.

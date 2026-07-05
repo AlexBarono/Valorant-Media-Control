@@ -9,6 +9,7 @@ import tkinter as tk
 import urllib.error
 import urllib.request
 import uuid
+import webbrowser
 from tkinter import messagebox, ttk
 from ctypes import wintypes
 
@@ -24,6 +25,8 @@ MAX_BACKGROUND_FRAMES = 1
 GITHUB_REPO = "AlexBarono/Valorant-Media-Control"
 GITHUB_REPO_URL = f"https://github.com/{GITHUB_REPO}"
 GITHUB_RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_COMMIT_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/commits/HEAD"
+GITHUB_DOWNLOAD_URL = f"{GITHUB_REPO_URL}/archive/refs/heads/main.zip"
 
 SRCCOPY = 0x00CC0020
 DIB_RGB_COLORS = 0
@@ -512,6 +515,14 @@ def normalize_version(value):
     return str(value or "").strip().lower().lstrip("v")
 
 
+def is_git_available():
+    try:
+        run_git_command("--version", timeout=5)
+        return True
+    except Exception:
+        return False
+
+
 def fetch_latest_release_info():
     request = urllib.request.Request(
         GITHUB_RELEASE_API_URL,
@@ -540,6 +551,43 @@ def fetch_latest_release_info():
     }
 
 
+def fetch_latest_api_head_info():
+    request = urllib.request.Request(
+        GITHUB_COMMIT_API_URL,
+        headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            if response.status != 200:
+                return None
+            data = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return None
+
+    remote_commit = data.get("sha", "")
+    if not remote_commit:
+        return None
+
+    current_commit = get_current_commit(short=False)
+    if current_commit:
+        available = current_commit != remote_commit
+        status = "Neue GitHub-Version gefunden." if available else "Du hast die neueste Version."
+    else:
+        available = False
+        status = "GitHub erreichbar. Fuer Auto-Update muss Git installiert sein."
+
+    return {
+        "kind": "api_commit",
+        "latest": f"GitHub {remote_commit[:7]}",
+        "remote_commit": remote_commit,
+        "url": GITHUB_REPO_URL,
+        "download_url": GITHUB_DOWNLOAD_URL,
+        "available": available,
+        "manual_update": not current_commit,
+        "status": status,
+    }
+
+
 def fetch_latest_remote_head_info():
     output = run_git_command("ls-remote", "origin", "HEAD", timeout=15)
     remote_commit = output.split()[0] if output else ""
@@ -563,7 +611,23 @@ def fetch_latest_version_info():
         release_info = None
     if release_info:
         return release_info
-    return fetch_latest_remote_head_info()
+
+    api_info = fetch_latest_api_head_info()
+    if api_info:
+        return api_info
+
+    if is_git_available():
+        return fetch_latest_remote_head_info()
+
+    return {
+        "kind": "manual",
+        "latest": "Git nicht gefunden",
+        "url": GITHUB_REPO_URL,
+        "download_url": GITHUB_DOWNLOAD_URL,
+        "available": False,
+        "manual_update": True,
+        "status": "Git ist nicht installiert. GitHub kann im Browser geoeffnet werden.",
+    }
 
 
 def pull_latest_version():
@@ -915,6 +979,7 @@ class App(tk.Tk):
         self.hero_update_window = None
         self.update_available = False
         self.update_check_running = False
+        self.manual_update_url = None
         self.update_status_var = tk.StringVar(value="Update noch nicht geprueft.")
         self.current_version_var = tk.StringVar(value=get_current_version_text())
         self.latest_version_var = tk.StringVar(value="-")
@@ -1167,7 +1232,10 @@ class App(tk.Tk):
         self.readme_text.configure(state="disabled")
 
     def update_button_clicked(self):
-        if self.update_available:
+        if self.manual_update_url:
+            webbrowser.open(self.manual_update_url)
+            self.update_status_var.set("GitHub wurde im Browser geoeffnet.")
+        elif self.update_available:
             self.install_update()
         else:
             self.check_for_updates()
@@ -1177,6 +1245,7 @@ class App(tk.Tk):
             return
         self.update_check_running = True
         self.update_available = False
+        self.manual_update_url = None
         self.update_button_text_var.set("Prueft...")
         self.update_status_var.set("Suche auf GitHub nach neuer Version...")
         if self.update_button:
@@ -1205,12 +1274,22 @@ class App(tk.Tk):
         latest = info.get("latest", "-")
         self.latest_version_var.set(latest)
         self.update_available = bool(info.get("available"))
-        if self.update_available:
+        self.manual_update_url = None
+
+        manual_update = bool(info.get("manual_update"))
+        if self.update_available and not is_git_available():
+            manual_update = True
+
+        if manual_update:
+            self.manual_update_url = info.get("download_url") or info.get("url") or GITHUB_REPO_URL
+            self.update_button_text_var.set("GitHub oeffnen")
+            self.update_status_var.set(info.get("status", "Auto-Update braucht Git."))
+        elif self.update_available:
             self.update_button_text_var.set("Jetzt aktualisieren")
-            self.update_status_var.set("Neue Version auf GitHub gefunden.")
+            self.update_status_var.set(info.get("status", "Neue Version auf GitHub gefunden."))
         else:
             self.update_button_text_var.set("Erneut pruefen")
-            self.update_status_var.set("Du hast die neueste Version.")
+            self.update_status_var.set(info.get("status", "Du hast die neueste Version."))
 
     def install_update(self):
         if self.update_check_running:
