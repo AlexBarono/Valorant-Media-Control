@@ -19,7 +19,7 @@ from ctypes import wintypes
 
 
 APP_NAME = "Game Media Control"
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"
 
 
 def get_app_dir():
