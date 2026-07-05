@@ -66,6 +66,9 @@ UPDATE_FILES = (
 
 SRCCOPY = 0x00CC0020
 DIB_RGB_COLORS = 0
+VALORANT_TARGET_HEX = "#ff4655"
+VALORANT_TARGET_RGB = (255, 70, 85)
+VALORANT_COLOR_TOLERANCE = 0
 
 WM_APPCOMMAND = 0x0319
 HWND_BROADCAST = ctypes.c_void_p(0xFFFF)
@@ -210,6 +213,7 @@ DEFAULT_CONFIG = {
     "red_pixel_percent": 1.0,
     "red_min_value": 140,
     "red_difference": 45,
+    "valorant_color_tolerance": VALORANT_COLOR_TOLERANCE,
     "stable_reads": 2,
     "require_valorant_foreground": True,
     "command_mode": "direct",
@@ -934,25 +938,30 @@ def capture_region(left, top, width, height):
         user32.ReleaseDC(None, screen_dc)
 
 
-def get_red_percent(raw_bgra, width, height, red_min_value, red_difference):
+def get_valorant_color_percent(raw_bgra, width, height, color_tolerance):
     total = width * height
     if total <= 0:
         return 0.0, 0, 0
 
-    red_pixels = 0
+    target_red, target_green, target_blue = VALORANT_TARGET_RGB
+    matched_pixels = 0
     for index in range(0, len(raw_bgra), 4):
         blue = raw_bgra[index]
         green = raw_bgra[index + 1]
         red = raw_bgra[index + 2]
 
-        if red >= red_min_value and red - green >= red_difference and red - blue >= red_difference:
-            red_pixels += 1
+        if (
+            abs(red - target_red) <= color_tolerance
+            and abs(green - target_green) <= color_tolerance
+            and abs(blue - target_blue) <= color_tolerance
+        ):
+            matched_pixels += 1
 
-    return red_pixels * 100.0 / total, red_pixels, total
+    return matched_pixels * 100.0 / total, matched_pixels, total
 
 
-def detect_state_from_red(raw_bgra, width, height, red_pixel_percent, red_min_value, red_difference):
-    percent, red_pixels, total = get_red_percent(raw_bgra, width, height, red_min_value, red_difference)
+def detect_state_from_red(raw_bgra, width, height, red_pixel_percent, color_tolerance):
+    percent, red_pixels, total = get_valorant_color_percent(raw_bgra, width, height, color_tolerance)
     state = "red" if percent >= red_pixel_percent else "no_red"
     return state, percent, red_pixels, total
 
@@ -1208,7 +1217,7 @@ class App(tk.Tk):
         self.interval_var = tk.StringVar(value=str(self.config_data.get("interval_ms", 450)))
         self.red_percent_var = tk.StringVar(value=str(self.config_data.get("red_pixel_percent", 1.0)))
         self.red_min_var = tk.StringVar(value=str(self.config_data.get("red_min_value", 140)))
-        self.red_difference_var = tk.StringVar(value=str(self.config_data.get("red_difference", 45)))
+        self.red_difference_var = tk.StringVar(value=str(self.config_data.get("valorant_color_tolerance", VALORANT_COLOR_TOLERANCE)))
         self.stable_var = tk.StringVar(value=str(self.config_data.get("stable_reads", 2)))
         self.require_valorant_var = tk.BooleanVar(value=bool(self.config_data.get("require_valorant_foreground", True)))
         self.command_mode_var = tk.StringVar(value=self.config_data.get("command_mode", "direct"))
@@ -1588,9 +1597,11 @@ class App(tk.Tk):
         ttk.Label(settings, text="Stabil").grid(row=0, column=4, sticky="w")
         ttk.Entry(settings, textvariable=self.stable_var, width=8).grid(row=0, column=5, sticky="ew", padx=(4, 0))
 
-        ttk.Label(settings, text="Rot min").grid(row=1, column=0, sticky="w", pady=(10, 0))
-        ttk.Entry(settings, textvariable=self.red_min_var, width=8).grid(row=1, column=1, sticky="ew", padx=(4, 12), pady=(10, 0))
-        ttk.Label(settings, text="Rot Abstand").grid(row=1, column=2, sticky="w", pady=(10, 0))
+        ttk.Label(settings, text="Farbe").grid(row=1, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(settings, text=f"{VALORANT_TARGET_HEX} RGB{VALORANT_TARGET_RGB}").grid(
+            row=1, column=1, sticky="w", padx=(4, 12), pady=(10, 0)
+        )
+        ttk.Label(settings, text="Toleranz").grid(row=1, column=2, sticky="w", pady=(10, 0))
         ttk.Entry(settings, textvariable=self.red_difference_var, width=8).grid(row=1, column=3, sticky="ew", padx=(4, 12), pady=(10, 0))
 
         ttk.Checkbutton(settings, text="Nur reagieren, wenn Valorant im Vordergrund ist", variable=self.require_valorant_var).grid(
@@ -1902,8 +1913,8 @@ class App(tk.Tk):
     def refresh_labels(self):
         self.region_var.set(region_to_text(self.config_data.get("region")))
         self.red_settings_var.set(
-            f"Tot ab {self.config_data.get('red_pixel_percent', 1.0)}% roten Pixeln "
-            f"(Rot min {self.config_data.get('red_min_value', 140)}, Abstand {self.config_data.get('red_difference', 45)})"
+            f"Tot ab {self.config_data.get('red_pixel_percent', 1.0)}% Pixeln mit {VALORANT_TARGET_HEX} "
+            f"(Toleranz {self.config_data.get('valorant_color_tolerance', VALORANT_COLOR_TOLERANCE)})"
         )
         self.lol_region_var.set(region_to_text(self.config_data.get("lol_region")))
         self.lol_number_settings_var.set(
@@ -1959,20 +1970,17 @@ class App(tk.Tk):
         try:
             interval_ms = int(float(self.interval_var.get()))
             red_pixel_percent = float(self.red_percent_var.get())
-            red_min_value = int(float(self.red_min_var.get()))
-            red_difference = int(float(self.red_difference_var.get()))
+            color_tolerance = int(float(self.red_difference_var.get()))
             stable_reads = int(float(self.stable_var.get()))
         except ValueError:
-            raise ValueError("Intervall, Rot %, Rot min, Rot Abstand und Stabil muessen Zahlen sein.")
+            raise ValueError("Intervall, Rot %, Toleranz und Stabil muessen Zahlen sein.")
 
         if interval_ms < 100:
             raise ValueError("Intervall muss mindestens 100 ms sein.")
         if red_pixel_percent < 0 or red_pixel_percent > 100:
             raise ValueError("Rot % muss zwischen 0 und 100 liegen.")
-        if red_min_value < 0 or red_min_value > 255:
-            raise ValueError("Rot min muss zwischen 0 und 255 liegen.")
-        if red_difference < 0 or red_difference > 255:
-            raise ValueError("Rot Abstand muss zwischen 0 und 255 liegen.")
+        if color_tolerance < 0 or color_tolerance > 80:
+            raise ValueError("Toleranz muss zwischen 0 und 80 liegen.")
         if stable_reads < 1:
             raise ValueError("Stabil muss mindestens 1 sein.")
         if self.command_mode_var.get() not in ("direct", "toggle"):
@@ -1980,8 +1988,8 @@ class App(tk.Tk):
 
         self.config_data["interval_ms"] = interval_ms
         self.config_data["red_pixel_percent"] = red_pixel_percent
-        self.config_data["red_min_value"] = red_min_value
-        self.config_data["red_difference"] = red_difference
+        self.config_data["valorant_color_tolerance"] = color_tolerance
+        self.config_data["red_difference"] = color_tolerance
         self.config_data["stable_reads"] = stable_reads
         self.config_data["require_valorant_foreground"] = bool(self.require_valorant_var.get())
         self.config_data["command_mode"] = self.command_mode_var.get()
@@ -2113,8 +2121,7 @@ class App(tk.Tk):
         region = dict(self.config_data["region"])
         interval = self.config_data["interval_ms"] / 1000.0
         red_pixel_percent = float(self.config_data["red_pixel_percent"])
-        red_min_value = int(self.config_data["red_min_value"])
-        red_difference = int(self.config_data["red_difference"])
+        color_tolerance = int(self.config_data.get("valorant_color_tolerance", VALORANT_COLOR_TOLERANCE))
         stable_reads = int(self.config_data["stable_reads"])
         require_valorant = bool(self.config_data["require_valorant_foreground"])
         command_mode = self.config_data.get("command_mode", "direct")
@@ -2139,8 +2146,7 @@ class App(tk.Tk):
                     region["width"],
                     region["height"],
                     red_pixel_percent,
-                    red_min_value,
-                    red_difference,
+                    color_tolerance,
                 )
 
                 readable = {
@@ -2148,7 +2154,7 @@ class App(tk.Tk):
                     "no_red": "nicht tot (kein Rot)",
                 }[state]
 
-                detail = f"{readable}  |  Rot {percent:.2f}% ({red_pixels}/{total})"
+                detail = f"{readable}  |  {VALORANT_TARGET_HEX} {percent:.2f}% ({red_pixels}/{total})"
                 self.events.put(("status", "valorant", "laeuft", detail, ""))
 
                 if candidate == state:
