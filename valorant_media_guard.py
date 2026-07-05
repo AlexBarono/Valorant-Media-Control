@@ -1138,9 +1138,9 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_NAME)
-        self.minsize(900, 760)
-        start_width = min(max(1100, int(self.winfo_screenwidth() * 0.72)), self.winfo_screenwidth() - 80)
-        start_height = min(max(940, int(self.winfo_screenheight() * 0.82)), self.winfo_screenheight() - 80)
+        self.minsize(1000, 720)
+        start_width = min(1280, self.winfo_screenwidth() - 80)
+        start_height = min(860, self.winfo_screenheight() - 80)
         self.geometry(f"{start_width}x{start_height}")
 
         self.config_data = load_config()
@@ -1267,18 +1267,17 @@ class App(tk.Tk):
         self.after(90, self.animate_background)
 
     def build_ui(self):
-        root = ttk.Frame(self)
+        root = ttk.Frame(self, padding=(18, 16, 18, 18))
         self.root_frame = root
-        root.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.94, relheight=0.92)
+        root.pack(fill="both", expand=True)
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(0, weight=1)
-        root.rowconfigure(1, weight=0)
+        root.rowconfigure(1, weight=1)
 
         self.build_hero(root)
 
         notebook = ttk.Notebook(root)
         self.notebook = notebook
-        notebook.grid(row=1, column=0, sticky="ew", padx=18, pady=(12, 18))
+        notebook.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
 
         valorant_tab = ttk.Frame(notebook, padding=12)
         lol_tab = ttk.Frame(notebook, padding=12)
@@ -1293,8 +1292,8 @@ class App(tk.Tk):
         self.after_idle(self.resize_hero)
 
     def build_hero(self, parent):
-        self.hero_canvas = tk.Canvas(parent, height=170, highlightthickness=0, bd=0, bg="black")
-        self.hero_canvas.grid(row=0, column=0, sticky="nsew")
+        self.hero_canvas = tk.Canvas(parent, height=190, highlightthickness=0, bd=0, bg="black")
+        self.hero_canvas.grid(row=0, column=0, sticky="ew")
         self.update_button = ttk.Button(self.hero_canvas, textvariable=self.update_button_text_var, command=self.update_button_clicked)
         self.hero_canvas.bind("<Configure>", lambda _event: self.draw_hero())
         self.bind("<Configure>", lambda _event: self.resize_hero())
@@ -1302,17 +1301,10 @@ class App(tk.Tk):
         self.draw_hero()
 
     def resize_hero(self):
-        if not self.hero_canvas or not self.root_frame or not self.notebook:
+        if not self.hero_canvas:
             return
-
-        root_height = self.root_frame.winfo_height()
-        if root_height <= 1:
-            root_height = int(max(self.winfo_height(), 1) * 0.92)
-
-        notebook_height = self.notebook.winfo_reqheight()
-        available = root_height - notebook_height - 30
-        max_height = self.banner_image.height() if self.banner_image else 360
-        target_height = max(100, min(max_height, available))
+        window_height = max(self.winfo_height(), 1)
+        target_height = max(150, min(230, int(window_height * 0.23)))
         if target_height != self.last_hero_height:
             self.last_hero_height = target_height
             self.hero_canvas.configure(height=target_height)
@@ -1327,9 +1319,18 @@ class App(tk.Tk):
         canvas.delete("all")
 
         if self.banner_image:
-            image = self.banner_image
-            self.hero_cover_zoom = 1
-            image_y = int((height - image.height()) * 0.64)
+            image_width = self.banner_image.width()
+            image_height = self.banner_image.height()
+            zoom = max(
+                1,
+                (width + image_width - 1) // image_width,
+                (height + image_height - 1) // image_height,
+            )
+            if self.hero_cover_zoom != zoom:
+                self.hero_cover_image = self.banner_image.zoom(zoom, zoom)
+                self.hero_cover_zoom = zoom
+            image = self.hero_cover_image
+            image_y = int((height - image.height()) * 0.46)
             canvas.create_image(
                 (width - image.width()) // 2,
                 image_y,
@@ -1341,16 +1342,16 @@ class App(tk.Tk):
 
         canvas.create_rectangle(0, 0, width, height, fill="#000000", stipple="gray50", outline="")
 
-        left = 28
+        left = 34
         if self.logo_header_image:
-            canvas.create_image(left, 34, image=self.logo_header_image, anchor="nw")
+            canvas.create_image(left, 32, image=self.logo_header_image, anchor="nw")
             text_left = left + self.logo_header_image.width() + 16
         else:
             text_left = left
 
         canvas.create_text(
             text_left,
-            36,
+            34,
             anchor="nw",
             fill="white",
             font=("Segoe UI", 18, "bold"),
@@ -1362,14 +1363,14 @@ class App(tk.Tk):
             anchor="nw",
             fill="white",
             font=("Segoe UI", 10),
-            width=min(620, max(260, width - 420)),
+            width=min(620, max(320, width - 470)),
             text=(
                 "Automatische Mediensteuerung fuer Valorant und League of Legends: "
                 "Bereich markieren, Zustand erkennen und Musik per Play/Pause oder Lautstaerke regeln."
             ),
         )
 
-        version_x = max(width - 380, left)
+        version_x = max(width - 355, left)
         canvas.create_text(
             version_x,
             34,
@@ -1396,7 +1397,7 @@ class App(tk.Tk):
             text=self.update_status_var.get(),
         )
         self.hero_update_window = canvas.create_window(
-            min(width - 132, version_x + 190),
+            max(version_x + 180, width - 152),
             32,
             anchor="nw",
             window=self.update_button,
