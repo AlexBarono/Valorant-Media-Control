@@ -4,6 +4,7 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -19,11 +20,35 @@ from ctypes import wintypes
 
 APP_NAME = "Game Media Control"
 APP_VERSION = "1.3.1"
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def get_app_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_resource_dir():
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return sys._MEIPASS
+    return get_app_dir()
+
+
+APP_DIR = get_app_dir()
+RESOURCE_DIR = get_resource_dir()
+
+
+def resource_path(file_name):
+    external_path = os.path.join(APP_DIR, file_name)
+    if os.path.exists(external_path):
+        return external_path
+    return os.path.join(RESOURCE_DIR, file_name)
+
+
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
-README_PATH = os.path.join(APP_DIR, "README.md")
-FALLBACK_BACKGROUND_PATH = os.path.join(APP_DIR, "Gangcord.gif")
-LOGO_PATH = os.path.join(APP_DIR, "logo der app.png")
+README_PATH = resource_path("README.md")
+FALLBACK_BACKGROUND_PATH = resource_path("Gangcord.gif")
+LOGO_PATH = resource_path("logo der app.png")
 MAX_BACKGROUND_FRAMES = 1
 GITHUB_REPO = "AlexBarono/Valorant-Media-Control"
 GITHUB_REPO_URL = f"https://github.com/{GITHUB_REPO}"
@@ -503,13 +528,14 @@ def is_replacement_header_image(file_name):
 
 def find_header_background_path():
     candidates = []
-    try:
-        for file_name in os.listdir(APP_DIR):
-            if is_replacement_header_image(file_name):
-                path = os.path.join(APP_DIR, file_name)
-                candidates.append((os.path.getmtime(path), path))
-    except OSError:
-        pass
+    for directory in (APP_DIR, RESOURCE_DIR):
+        try:
+            for file_name in os.listdir(directory):
+                if is_replacement_header_image(file_name):
+                    path = os.path.join(directory, file_name)
+                    candidates.append((os.path.getmtime(path), path))
+        except OSError:
+            pass
 
     if candidates:
         return max(candidates)[1]

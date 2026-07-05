@@ -1,9 +1,9 @@
 {
   "region": {
-    "left": 2999,
-    "top": 691,
-    "width": 818,
-    "height": 176
+    "left": 2993,
+    "top": 1015,
+    "width": 835,
+    "height": 131
   },
   "interval_ms": 450,
   "red_pixel_percent": 10.0,
@@ -14,7 +14,7 @@
   "command_mode": "toggle",
   "action_mode": "volume",
   "target_process": "Spotify.exe",
-  "target_label": "Spotify.exe - Spotify (2552) - 25%",
+  "target_label": "Spotify.exe - Spotify (2552) - 50%",
   "dead_volume": 50.0,
   "alive_volume": 25.0,
   "lol_region": null,
