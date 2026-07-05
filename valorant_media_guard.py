@@ -18,7 +18,7 @@ from ctypes import wintypes
 
 
 APP_NAME = "Game Media Control"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 README_PATH = os.path.join(APP_DIR, "README.md")
