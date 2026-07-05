@@ -69,6 +69,8 @@ DIB_RGB_COLORS = 0
 VALORANT_TARGET_HEX = "#ff4655"
 VALORANT_TARGET_RGB = (255, 70, 85)
 VALORANT_COLOR_TOLERANCE = 0
+VALORANT_AUTO_RED_MIN_VALUE = 120
+VALORANT_AUTO_RED_MIN_GAP = 35
 
 WM_APPCOMMAND = 0x0319
 HWND_BROADCAST = ctypes.c_void_p(0xFFFF)
@@ -213,6 +215,7 @@ DEFAULT_CONFIG = {
     "red_pixel_percent": 1.0,
     "red_min_value": 140,
     "red_difference": 45,
+    "valorant_target_rgb": list(VALORANT_TARGET_RGB),
     "valorant_color_tolerance": VALORANT_COLOR_TOLERANCE,
     "stable_reads": 2,
     "require_valorant_foreground": True,
@@ -938,12 +941,73 @@ def capture_region(left, top, width, height):
         user32.ReleaseDC(None, screen_dc)
 
 
-def get_valorant_color_percent(raw_bgra, width, height, color_tolerance):
+def normalize_rgb(value, fallback=VALORANT_TARGET_RGB):
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        return fallback
+
+    try:
+        red, green, blue = (int(channel) for channel in value)
+    except (TypeError, ValueError):
+        return fallback
+
+    return (
+        max(0, min(255, red)),
+        max(0, min(255, green)),
+        max(0, min(255, blue)),
+    )
+
+
+def rgb_to_hex(rgb):
+    red, green, blue = normalize_rgb(rgb)
+    return f"#{red:02x}{green:02x}{blue:02x}"
+
+
+def format_rgb(rgb):
+    normalized = normalize_rgb(rgb)
+    return f"{rgb_to_hex(normalized)} RGB{normalized}"
+
+
+def get_valorant_target_rgb(config_data):
+    return normalize_rgb(config_data.get("valorant_target_rgb"), VALORANT_TARGET_RGB)
+
+
+def find_dominant_red_color(raw_bgra, width, height):
+    total = width * height
+    color_counts = {}
+
+    for index in range(0, len(raw_bgra), 4):
+        blue = raw_bgra[index]
+        green = raw_bgra[index + 1]
+        red = raw_bgra[index + 2]
+
+        if red < VALORANT_AUTO_RED_MIN_VALUE:
+            continue
+        if red - green < VALORANT_AUTO_RED_MIN_GAP or red - blue < VALORANT_AUTO_RED_MIN_GAP:
+            continue
+
+        rgb = (red, green, blue)
+        color_counts[rgb] = color_counts.get(rgb, 0) + 1
+
+    if not color_counts:
+        return None, 0, total
+
+    def sort_key(item):
+        rgb, count = item
+        red, green, blue = rgb
+        dominance = red - max(green, blue)
+        default_distance = sum(abs(channel - target) for channel, target in zip(rgb, VALORANT_TARGET_RGB))
+        return count, dominance, red, -default_distance
+
+    color, count = max(color_counts.items(), key=sort_key)
+    return color, count, total
+
+
+def get_valorant_color_percent(raw_bgra, width, height, color_tolerance, target_rgb=None):
     total = width * height
     if total <= 0:
         return 0.0, 0, 0
 
-    target_red, target_green, target_blue = VALORANT_TARGET_RGB
+    target_red, target_green, target_blue = normalize_rgb(target_rgb)
     matched_pixels = 0
     for index in range(0, len(raw_bgra), 4):
         blue = raw_bgra[index]
@@ -960,8 +1024,8 @@ def get_valorant_color_percent(raw_bgra, width, height, color_tolerance):
     return matched_pixels * 100.0 / total, matched_pixels, total
 
 
-def detect_state_from_red(raw_bgra, width, height, red_pixel_percent, color_tolerance):
-    percent, red_pixels, total = get_valorant_color_percent(raw_bgra, width, height, color_tolerance)
+def detect_state_from_red(raw_bgra, width, height, red_pixel_percent, color_tolerance, target_rgb=None):
+    percent, red_pixels, total = get_valorant_color_percent(raw_bgra, width, height, color_tolerance, target_rgb)
     state = "red" if percent >= red_pixel_percent else "no_red"
     return state, percent, red_pixels, total
 
@@ -1211,6 +1275,7 @@ class App(tk.Tk):
 
         self.region_var = tk.StringVar()
         self.red_settings_var = tk.StringVar()
+        self.valorant_color_var = tk.StringVar()
         self.monitor_var = tk.StringVar(value="gestoppt")
         self.detected_var = tk.StringVar(value="-")
         self.log_var = tk.StringVar(value="Bereit.")
@@ -1598,7 +1663,7 @@ class App(tk.Tk):
         ttk.Entry(settings, textvariable=self.stable_var, width=8).grid(row=0, column=5, sticky="ew", padx=(4, 0))
 
         ttk.Label(settings, text="Farbe").grid(row=1, column=0, sticky="w", pady=(10, 0))
-        ttk.Label(settings, text=f"{VALORANT_TARGET_HEX} RGB{VALORANT_TARGET_RGB}").grid(
+        ttk.Label(settings, textvariable=self.valorant_color_var).grid(
             row=1, column=1, sticky="w", padx=(4, 12), pady=(10, 0)
         )
         ttk.Label(settings, text="Toleranz").grid(row=1, column=2, sticky="w", pady=(10, 0))
@@ -1911,9 +1976,11 @@ class App(tk.Tk):
         return f"Pause gesendet, weil Zustand jetzt {state_text} ist."
 
     def refresh_labels(self):
+        target_rgb = get_valorant_target_rgb(self.config_data)
         self.region_var.set(region_to_text(self.config_data.get("region")))
+        self.valorant_color_var.set(format_rgb(target_rgb))
         self.red_settings_var.set(
-            f"Tot ab {self.config_data.get('red_pixel_percent', 1.0)}% Pixeln mit {VALORANT_TARGET_HEX} "
+            f"Tot ab {self.config_data.get('red_pixel_percent', 1.0)}% Pixeln mit {format_rgb(target_rgb)} "
             f"(Toleranz {self.config_data.get('valorant_color_tolerance', VALORANT_COLOR_TOLERANCE)})"
         )
         self.lol_region_var.set(region_to_text(self.config_data.get("lol_region")))
@@ -1950,6 +2017,27 @@ class App(tk.Tk):
             RegionSelector(self, lambda region: self.region_selected("valorant", region), prompt, "#ff4655")
 
     def region_selected(self, game, region):
+        valorant_color_message = None
+        if region and game == "valorant":
+            try:
+                raw = capture_region(region["left"], region["top"], region["width"], region["height"])
+                target_rgb, target_pixels, total_pixels = find_dominant_red_color(raw, region["width"], region["height"])
+                if target_rgb:
+                    self.config_data["valorant_target_rgb"] = list(target_rgb)
+                    self.config_data["valorant_color_tolerance"] = 0
+                    self.config_data["red_difference"] = 0
+                    self.red_difference_var.set("0")
+                    valorant_color_message = (
+                        f"Farbe {format_rgb(target_rgb)} automatisch uebernommen "
+                        f"({target_pixels}/{total_pixels} Pixel, Toleranz 0)."
+                    )
+                else:
+                    valorant_color_message = (
+                        f"Keine rote Farbe im Bereich gefunden. Farbe bleibt {format_rgb(get_valorant_target_rgb(self.config_data))}."
+                    )
+            except Exception as exc:
+                valorant_color_message = f"Farbe konnte nicht automatisch gelesen werden: {exc}"
+
         self.deiconify()
         self.lift()
         if not region:
@@ -1961,7 +2049,11 @@ class App(tk.Tk):
             self.set_game_status("lol", log="Bereich gespeichert. Start druecken, dann wird eine Zahl in diesem Bereich erkannt.")
         else:
             self.config_data["region"] = region
-            self.set_game_status("valorant", log="Bereich gespeichert. Start druecken, dann wird Rot in diesem Bereich erkannt.")
+            message = "Bereich gespeichert."
+            if valorant_color_message:
+                message = f"{message} {valorant_color_message}"
+            message = f"{message} Start druecken, dann wird diese Farbe in diesem Bereich erkannt."
+            self.set_game_status("valorant", log=message)
 
         save_config(self.config_data)
         self.refresh_labels()
@@ -2122,6 +2214,7 @@ class App(tk.Tk):
         interval = self.config_data["interval_ms"] / 1000.0
         red_pixel_percent = float(self.config_data["red_pixel_percent"])
         color_tolerance = int(self.config_data.get("valorant_color_tolerance", VALORANT_COLOR_TOLERANCE))
+        target_rgb = get_valorant_target_rgb(self.config_data)
         stable_reads = int(self.config_data["stable_reads"])
         require_valorant = bool(self.config_data["require_valorant_foreground"])
         command_mode = self.config_data.get("command_mode", "direct")
@@ -2147,6 +2240,7 @@ class App(tk.Tk):
                     region["height"],
                     red_pixel_percent,
                     color_tolerance,
+                    target_rgb,
                 )
 
                 readable = {
@@ -2154,7 +2248,7 @@ class App(tk.Tk):
                     "no_red": "nicht tot (kein Rot)",
                 }[state]
 
-                detail = f"{readable}  |  {VALORANT_TARGET_HEX} {percent:.2f}% ({red_pixels}/{total})"
+                detail = f"{readable}  |  {format_rgb(target_rgb)} {percent:.2f}% ({red_pixels}/{total})"
                 self.events.put(("status", "valorant", "laeuft", detail, ""))
 
                 if candidate == state:
