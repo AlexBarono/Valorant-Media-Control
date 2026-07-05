@@ -25,7 +25,6 @@ README_PATH = os.path.join(APP_DIR, "README.md")
 FALLBACK_BACKGROUND_PATH = os.path.join(APP_DIR, "Gangcord.gif")
 LOGO_PATH = os.path.join(APP_DIR, "logo der app.png")
 MAX_BACKGROUND_FRAMES = 1
-HEADER_HEIGHT = "10c"
 GITHUB_REPO = "AlexBarono/Valorant-Media-Control"
 GITHUB_REPO_URL = f"https://github.com/{GITHUB_REPO}"
 GITHUB_RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -1158,6 +1157,7 @@ class App(tk.Tk):
         self.hero_cover_zoom = None
         self.hero_canvas = None
         self.hero_update_window = None
+        self.last_hero_height = None
         self.update_available = False
         self.update_check_running = False
         self.manual_update_url = None
@@ -1284,11 +1284,22 @@ class App(tk.Tk):
         self.build_readme_tab(readme_tab)
 
     def build_hero(self, parent):
-        self.hero_canvas = tk.Canvas(parent, height=HEADER_HEIGHT, highlightthickness=0, bd=0, bg="black")
+        self.hero_canvas = tk.Canvas(parent, height=170, highlightthickness=0, bd=0, bg="black")
         self.hero_canvas.grid(row=0, column=0, sticky="ew")
         self.update_button = ttk.Button(self.hero_canvas, textvariable=self.update_button_text_var, command=self.update_button_clicked)
         self.hero_canvas.bind("<Configure>", lambda _event: self.draw_hero())
+        self.bind("<Configure>", lambda _event: self.resize_hero())
+        self.resize_hero()
         self.draw_hero()
+
+    def resize_hero(self):
+        if not self.hero_canvas:
+            return
+        window_height = max(self.winfo_height(), 1)
+        target_height = max(130, min(220, int(window_height * 0.18)))
+        if target_height != self.last_hero_height:
+            self.last_hero_height = target_height
+            self.hero_canvas.configure(height=target_height)
 
     def draw_hero(self):
         if not self.hero_canvas:
@@ -1351,7 +1362,7 @@ class App(tk.Tk):
             ),
         )
 
-        version_x = max(width - 310, left)
+        version_x = max(width - 380, left)
         canvas.create_text(
             version_x,
             34,
@@ -1378,7 +1389,7 @@ class App(tk.Tk):
             text=self.update_status_var.get(),
         )
         self.hero_update_window = canvas.create_window(
-            version_x + 170,
+            min(width - 132, version_x + 190),
             32,
             anchor="nw",
             window=self.update_button,
