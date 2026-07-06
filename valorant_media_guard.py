@@ -2,6 +2,7 @@ import ctypes
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -19,13 +20,17 @@ from ctypes import wintypes
 
 
 APP_NAME = "Game Media Control"
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.5"
 
 
 def get_app_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def is_frozen_app():
+    return bool(getattr(sys, "frozen", False))
 
 
 def get_resource_dir():
@@ -55,6 +60,7 @@ GITHUB_REPO_URL = f"https://github.com/{GITHUB_REPO}"
 GITHUB_RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_COMMIT_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/commits/HEAD"
 GITHUB_RAW_APP_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/valorant_media_guard.py"
+GITHUB_RAW_EXE_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/dist/Game%20Media%20Control.exe"
 GITHUB_DOWNLOAD_URL = f"{GITHUB_REPO_URL}/archive/refs/heads/main.zip"
 UPDATE_FILES = (
     "valorant_media_guard.py",
@@ -634,6 +640,29 @@ def powershell_quote(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def find_release_exe_download_url(release_data):
+    assets = release_data.get("assets")
+    if not isinstance(assets, list):
+        return ""
+
+    app_key = APP_NAME.lower().replace(" ", "")
+    exe_assets = []
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name") or "")
+        download_url = str(asset.get("browser_download_url") or "")
+        if name.lower().endswith(".exe") and download_url:
+            exe_assets.append((name, download_url))
+
+    for name, download_url in exe_assets:
+        if app_key in name.lower().replace(" ", ""):
+            return download_url
+    if exe_assets:
+        return exe_assets[0][1]
+    return ""
+
+
 def read_url_text(url, timeout=8):
     request = urllib.request.Request(
         url,
@@ -696,11 +725,18 @@ def fetch_latest_release_info():
     tag_name = data.get("tag_name")
     if not tag_name:
         return None
+    exe_download_url = find_release_exe_download_url(data)
+    if is_frozen_app():
+        download_url = exe_download_url or GITHUB_RAW_EXE_URL
+    else:
+        download_url = GITHUB_DOWNLOAD_URL
     return {
         "kind": "release",
         "latest": tag_name,
         "url": data.get("html_url", GITHUB_REPO_URL),
+        "download_url": download_url,
         "available": is_version_newer(tag_name, APP_VERSION),
+        "manual_update": False,
     }
 
 
@@ -725,7 +761,7 @@ def fetch_latest_raw_version_info():
         "kind": "raw_version",
         "latest": f"v{remote_version}",
         "url": GITHUB_REPO_URL,
-        "download_url": GITHUB_DOWNLOAD_URL,
+        "download_url": GITHUB_RAW_EXE_URL if is_frozen_app() else GITHUB_DOWNLOAD_URL,
         "available": available,
         "manual_update": False,
         "status": status,
@@ -758,7 +794,7 @@ def fetch_latest_api_head_info():
         "latest": f"GitHub {remote_commit[:7]}",
         "remote_commit": remote_commit,
         "url": GITHUB_REPO_URL,
-        "download_url": GITHUB_DOWNLOAD_URL,
+        "download_url": GITHUB_RAW_EXE_URL if is_frozen_app() else GITHUB_DOWNLOAD_URL,
         "available": available,
         "manual_update": False,
         "status": status,
@@ -786,12 +822,14 @@ def fetch_latest_version_info():
         release_info = fetch_latest_release_info()
     except Exception:
         release_info = None
-    if release_info:
-        return release_info
 
     raw_version_info = fetch_latest_raw_version_info()
+    if release_info and (release_info.get("available") or not raw_version_info):
+        return release_info
     if raw_version_info:
         return raw_version_info
+    if release_info:
+        return release_info
 
     api_info = fetch_latest_api_head_info()
     if api_info:
@@ -848,6 +886,86 @@ def download_and_apply_zip_update():
             raise RuntimeError("Update-ZIP enthaelt keine bekannten Programmdateien.")
 
         return "Aktualisiert: " + ", ".join(updated)
+
+
+def validate_downloaded_exe(exe_path):
+    if not os.path.exists(exe_path):
+        raise RuntimeError("Die neue EXE wurde nicht heruntergeladen.")
+    if os.path.getsize(exe_path) < 1024 * 1024:
+        raise RuntimeError("Die heruntergeladene EXE ist zu klein oder unvollstaendig.")
+    with open(exe_path, "rb") as handle:
+        if handle.read(2) != b"MZ":
+            raise RuntimeError("Die heruntergeladene Datei ist keine gueltige Windows-EXE.")
+
+
+def write_exe_update_script(script_path, current_exe_path, new_exe_path, current_pid):
+    script = f"""@echo off
+setlocal
+set "OLD_EXE={current_exe_path}"
+set "NEW_EXE={new_exe_path}"
+set "APP_PID={current_pid}"
+
+:wait_for_app
+tasklist /FI "PID eq %APP_PID%" 2>NUL | findstr /C:"%APP_PID%" >NUL
+if not errorlevel 1 (
+    timeout /T 1 /NOBREAK >NUL
+    goto wait_for_app
+)
+
+set /A TRY_COUNT=0
+:replace_exe
+set /A TRY_COUNT+=1
+move /Y "%NEW_EXE%" "%OLD_EXE%" >NUL
+if exist "%NEW_EXE%" (
+    if %TRY_COUNT% LSS 20 (
+        timeout /T 1 /NOBREAK >NUL
+        goto replace_exe
+    )
+    exit /B 1
+)
+
+start "" "%OLD_EXE%"
+del "%~f0"
+"""
+    with open(script_path, "w", encoding="utf-8") as handle:
+        handle.write(script)
+
+
+def prepare_exe_update(download_url=None):
+    if not is_frozen_app():
+        return {
+            "mode": "files",
+            "message": download_and_apply_zip_update(),
+        }
+
+    update_dir = os.path.join(APP_DIR, "_update")
+    os.makedirs(update_dir, exist_ok=True)
+
+    current_exe_path = os.path.abspath(sys.executable)
+    new_exe_path = os.path.join(update_dir, f"{APP_NAME}.new.exe")
+    script_path = os.path.join(update_dir, "finish_update.bat")
+
+    download_url_to_file(download_url or GITHUB_RAW_EXE_URL, new_exe_path, timeout=90)
+    validate_downloaded_exe(new_exe_path)
+    write_exe_update_script(script_path, current_exe_path, new_exe_path, os.getpid())
+
+    return {
+        "mode": "exe",
+        "message": "Neue EXE wurde heruntergeladen. Die App wird gleich geschlossen, ersetzt und neu gestartet.",
+        "script_path": script_path,
+    }
+
+
+def start_hidden_update_script(script_path):
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    subprocess.Popen(
+        ["cmd.exe", "/c", script_path],
+        cwd=os.path.dirname(script_path),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags,
+    )
 
 
 def get_virtual_screen():
@@ -960,6 +1078,36 @@ def normalize_rgb(value, fallback=VALORANT_TARGET_RGB):
 def rgb_to_hex(rgb):
     red, green, blue = normalize_rgb(rgb)
     return f"#{red:02x}{green:02x}{blue:02x}"
+
+
+def parse_rgb_input(value):
+    text = str(value or "").strip().lower()
+    compact = text.replace(" ", "")
+    if not compact:
+        raise ValueError("Gib eine Farbe ein, z.B. #ff4655 oder 255,70,85.")
+
+    if compact.startswith("#"):
+        compact = compact[1:]
+    if compact.startswith("0x"):
+        compact = compact[2:]
+
+    if re.fullmatch(r"[0-9a-f]{3}", compact):
+        compact = "".join(char * 2 for char in compact)
+    if re.fullmatch(r"[0-9a-f]{6}", compact):
+        return (
+            int(compact[0:2], 16),
+            int(compact[2:4], 16),
+            int(compact[4:6], 16),
+        )
+
+    numbers = re.findall(r"\d+(?:\.\d+)?", text)
+    if len(numbers) >= 3:
+        channels = tuple(int(float(number)) for number in numbers[:3])
+        if all(0 <= channel <= 255 for channel in channels):
+            return channels
+        raise ValueError("RGB-Werte muessen zwischen 0 und 255 liegen.")
+
+    raise ValueError("Farbe nicht erkannt. Nutze z.B. #ff4655 oder 255,70,85.")
 
 
 def format_rgb(rgb):
@@ -1318,6 +1466,7 @@ class App(tk.Tk):
         self.update_available = False
         self.update_check_running = False
         self.manual_update_url = None
+        self.update_download_url = None
         self.update_status_var = tk.StringVar(value="Update noch nicht geprueft.")
         self.current_version_var = tk.StringVar(value=get_current_version_text())
         self.latest_version_var = tk.StringVar(value="-")
@@ -1329,6 +1478,8 @@ class App(tk.Tk):
         self.region_var = tk.StringVar()
         self.red_settings_var = tk.StringVar()
         self.valorant_color_var = tk.StringVar()
+        self.valorant_color_entry_var = tk.StringVar(value=rgb_to_hex(get_valorant_target_rgb(self.config_data)))
+        self.valorant_color_swatch = None
         self.monitor_var = tk.StringVar(value="gestoppt")
         self.detected_var = tk.StringVar(value="-")
         self.log_var = tk.StringVar(value="Bereit.")
@@ -1607,6 +1758,7 @@ class App(tk.Tk):
         self.update_check_running = True
         self.update_available = False
         self.manual_update_url = None
+        self.update_download_url = None
         self.update_button_text_var.set("Prueft...")
         self.update_status_var.set("Suche auf GitHub nach neuer Version...")
         if self.update_button:
@@ -1636,6 +1788,7 @@ class App(tk.Tk):
         self.latest_version_var.set(latest)
         self.update_available = bool(info.get("available"))
         self.manual_update_url = None
+        self.update_download_url = info.get("download_url")
 
         manual_update = bool(info.get("manual_update"))
 
@@ -1655,15 +1808,18 @@ class App(tk.Tk):
             return
         self.update_check_running = True
         self.update_button_text_var.set("Aktualisiert...")
-        self.update_status_var.set("Update-ZIP wird von GitHub geladen...")
+        if is_frozen_app():
+            self.update_status_var.set("Update-EXE wird von GitHub geladen...")
+        else:
+            self.update_status_var.set("Update-ZIP wird von GitHub geladen...")
         if self.update_button:
             self.update_button.configure(state="disabled")
         threading.Thread(target=self.install_update_worker, daemon=True).start()
 
     def install_update_worker(self):
         try:
-            output = download_and_apply_zip_update()
-            self.events.put(("update_install", True, output or "Update abgeschlossen."))
+            output = prepare_exe_update(self.update_download_url)
+            self.events.put(("update_install", True, output or {"message": "Update abgeschlossen."}))
         except subprocess.CalledProcessError as exc:
             message = exc.output.strip() if exc.output else str(exc)
             self.events.put(("update_install", False, message))
@@ -1675,11 +1831,19 @@ class App(tk.Tk):
         if self.update_button:
             self.update_button.configure(state="normal")
         if success:
+            result = message if isinstance(message, dict) else {"mode": "files", "message": str(message)}
             self.update_available = False
             self.current_version_var.set(get_current_version_text())
-            self.update_button_text_var.set("Erneut pruefen")
-            self.update_status_var.set("Update fertig. App bitte neu starten.")
-            messagebox.showinfo("Update", "Update wurde geladen. Starte die App neu, damit die neue Version aktiv ist.")
+            if result.get("mode") == "exe" and result.get("script_path"):
+                self.update_button_text_var.set("Update startet...")
+                self.update_status_var.set("Update geladen. App wird neu gestartet...")
+                messagebox.showinfo("Update", result.get("message", "Update wurde geladen. Die App wird jetzt neu gestartet."))
+                start_hidden_update_script(result["script_path"])
+                self.after(250, self.destroy)
+            else:
+                self.update_button_text_var.set("Erneut pruefen")
+                self.update_status_var.set("Update fertig. App bitte neu starten.")
+                messagebox.showinfo("Update", "Update wurde geladen. Starte die App neu, damit die neue Version aktiv ist.")
         else:
             self.update_button_text_var.set("Jetzt aktualisieren" if self.update_available else "Update pruefen")
             self.update_status_var.set("Update fehlgeschlagen.")
@@ -1718,11 +1882,15 @@ class App(tk.Tk):
         ttk.Entry(settings, textvariable=self.stable_var, width=8).grid(row=0, column=5, sticky="ew", padx=(4, 0))
 
         ttk.Label(settings, text="Farbe").grid(row=1, column=0, sticky="w", pady=(10, 0))
-        ttk.Label(settings, textvariable=self.valorant_color_var).grid(
-            row=1, column=1, sticky="w", padx=(4, 12), pady=(10, 0)
-        )
-        ttk.Label(settings, text="Toleranz").grid(row=1, column=2, sticky="w", pady=(10, 0))
-        ttk.Entry(settings, textvariable=self.red_difference_var, width=8).grid(row=1, column=3, sticky="ew", padx=(4, 12), pady=(10, 0))
+        color_controls = ttk.Frame(settings)
+        color_controls.grid(row=1, column=1, columnspan=3, sticky="ew", padx=(4, 12), pady=(10, 0))
+        color_controls.columnconfigure(1, weight=1)
+        self.valorant_color_swatch = tk.Label(color_controls, width=4, relief="solid", borderwidth=1)
+        self.valorant_color_swatch.grid(row=0, column=0, sticky="ns", padx=(0, 6))
+        ttk.Entry(color_controls, textvariable=self.valorant_color_entry_var, width=14).grid(row=0, column=1, sticky="ew", padx=(0, 6))
+        ttk.Button(color_controls, text="Speichern", command=self.save_manual_valorant_color).grid(row=0, column=2, sticky="e")
+        ttk.Label(settings, text="Toleranz").grid(row=1, column=4, sticky="w", pady=(10, 0))
+        ttk.Entry(settings, textvariable=self.red_difference_var, width=8).grid(row=1, column=5, sticky="ew", padx=(4, 0), pady=(10, 0))
 
         ttk.Checkbutton(settings, text="Nur reagieren, wenn Valorant im Vordergrund ist", variable=self.require_valorant_var).grid(
             row=2, column=0, columnspan=6, sticky="w", pady=(10, 4)
@@ -2032,8 +2200,12 @@ class App(tk.Tk):
 
     def refresh_labels(self):
         target_rgb = get_valorant_target_rgb(self.config_data)
+        target_hex = rgb_to_hex(target_rgb)
         self.region_var.set(region_to_text(self.config_data.get("region")))
         self.valorant_color_var.set(format_rgb(target_rgb))
+        self.valorant_color_entry_var.set(target_hex)
+        if self.valorant_color_swatch:
+            self.valorant_color_swatch.configure(bg=target_hex)
         self.red_settings_var.set(
             f"Tot ab {self.config_data.get('red_pixel_percent', 1.0)}% Pixeln mit {format_rgb(target_rgb)} "
             f"(Toleranz {self.config_data.get('valorant_color_tolerance', VALORANT_COLOR_TOLERANCE)})"
@@ -2135,6 +2307,21 @@ class App(tk.Tk):
         self.lift()
         self.set_game_status("valorant", log=message)
         self.refresh_labels()
+
+    def save_manual_valorant_color(self):
+        try:
+            target_rgb = parse_rgb_input(self.valorant_color_entry_var.get())
+        except ValueError as exc:
+            messagebox.showerror("Farbe speichern", str(exc))
+            return
+
+        self.config_data["valorant_target_rgb"] = list(target_rgb)
+        self.config_data["valorant_color_tolerance"] = 0
+        self.config_data["red_difference"] = 0
+        self.red_difference_var.set("0")
+        save_config(self.config_data)
+        self.refresh_labels()
+        self.set_game_status("valorant", log=f"Farbe {format_rgb(target_rgb)} manuell gespeichert (Toleranz 0).")
 
     def sync_valorant_settings(self):
         try:
