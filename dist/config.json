@@ -1,20 +1,26 @@
 {
   "region": {
-    "left": 3001,
-    "top": 978,
-    "width": 825,
-    "height": 94
+    "left": 2983,
+    "top": 610,
+    "width": 837,
+    "height": 719
   },
   "interval_ms": 450,
   "red_pixel_percent": 1.0,
   "red_min_value": 150,
-  "red_difference": 45,
+  "red_difference": 0,
+  "valorant_target_rgb": [
+    255,
+    40,
+    145
+  ],
+  "valorant_color_tolerance": 0,
   "stable_reads": 2,
   "require_valorant_foreground": true,
   "command_mode": "toggle",
   "action_mode": "media",
   "target_process": "Spotify.exe",
-  "target_label": "Spotify.exe - Spotify (2552) - 25%",
+  "target_label": "Spotify.exe - Spotify (40120) - 25%",
   "dead_volume": 100.0,
   "alive_volume": 25.0,
   "lol_region": null,
