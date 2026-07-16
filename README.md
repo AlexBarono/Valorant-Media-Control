@@ -1,80 +1,116 @@
-# Game Media Control
+# Gangcord
 
-Kleines Windows-Tool mit modernem Windows-Setup und drei Tabs:
+Gangcord is a Windows media controller for Valorant and League of Legends. It watches only a screen region selected by the user and changes normal Windows media playback or the volume of a selected audio session.
 
-- **Valorant**: Rot im gewaehlten Bildschirmbereich gilt als `tot`, kein Rot als `nicht tot`.
-- **LoL**: Eine Zahl oder ein Countdown im gewaehlten Bildschirmbereich gilt als `tot`, keine Zahl als `nicht tot`.
+Gangcord does not inject code, inspect game memory, modify game files, communicate with anti-cheat components, or automate gameplay.
 
-Pro Tab kannst du getrennt einstellen, ob das Tool `Play/Pause` sendet oder nur die Lautstaerke einer ausgewaehlten Medienwiedergabe aendert.
+## Features
 
-Der dritte Tab zeigt diese README direkt im Programm.
+- Separate Valorant and League of Legends profiles
+- Valorant target-color detection with visual color swatch and manual RGB/hex input
+- League of Legends number and countdown-region detection
+- Selectable Windows audio session
+- Direct Play/Pause control or volume-only control
+- Separate dead and alive volume values
+- Automatic launch with Valorant, League of Legends, both games, or neither
+- Light, dark, and system themes
+- Scrollable interface for small displays and high Windows scaling
+- Single-instance protection for the application and watcher
+- Installer-based updates from GitHub releases
 
-Das Tool liest nur den Bildschirm und sendet normale Windows-Medientasten. Es greift nicht in Spiel-Speicher, Dateien, Netzwerk oder Anti-Cheat ein.
+## Getting Started
+
+1. Open the Valorant or LoL tab.
+2. Select the smallest practical screen region containing the relevant state indicator.
+3. For Valorant, select the target color or enter it manually, such as `#ff4655`, `255,70,85`, `rgb(255,70,85)`, or `rgba(255,70,85,1)`.
+4. Open the media player you want to control and select **Refresh**.
+5. Choose the media session.
+6. Select **Control Play/Pause** or **Adjust volume only**.
+7. Test the selected behavior and select **Start**.
+
+## Automatic Game Detection
+
+`GangcordWatcher.exe` checks running process names at a low frequency and opens Gangcord when a selected game starts. It never reads process memory.
+
+Detected Valorant processes:
+
+- `VALORANT-Win64-Shipping.exe`
+- `RiotClientServices.exe`
+
+Detected League of Legends processes:
+
+- `LeagueClient.exe`
+- `LeagueClientUx.exe`
+- `League of Legends.exe`
+
+## Storage Locations
+
+Gangcord keeps the installation directory clean.
+
+- Settings: `%LOCALAPPDATA%\Gangcord\config.json`
+- Logs: `%LOCALAPPDATA%\Gangcord\Logs\`
+- Cache: `%LOCALAPPDATA%\Gangcord\Cache\`
+- Temporary update files: `%TEMP%\Gangcord\`
+
+Settings are written atomically as UTF-8 JSON. Existing settings from `%LOCALAPPDATA%\Game Media Control\config.json` are migrated when possible.
 
 ## Installation
 
-Die fertige Setup-Datei heisst `Game Media Control Setup.exe` und liegt nach dem Build im Ordner `setup`.
+The Inno Setup installer offers both installation modes:
 
-Das Setup bietet:
+- Current user: `%LOCALAPPDATA%\Programs\Gangcord\`, without administrator rights
+- All users: `C:\Program Files\Gangcord\` for the 64-bit build, with administrator rights
 
-- Installation nur fuer den aktuellen Benutzer unter `%LOCALAPPDATA%\Programs\Game Media Control\`
-- Installation fuer alle Benutzer unter `C:\Program Files\Game Media Control\` bei 64-Bit oder `C:\Program Files (x86)\Game Media Control\` bei 32-Bit
-- Lizenzvereinbarung mit ausdruecklicher Zustimmung
-- optionale Desktopverknuepfung
-- Startmenue-Eintrag
-- optionalen Autostart-Waechter fuer Valorant und/oder League of Legends
-- Deinstaller mit optionalem Loeschen der persoenlichen Daten
+The desktop shortcut is optional. A Start menu shortcut is always created. Personal settings remain in each user's `%LOCALAPPDATA%` folder for both installation modes.
 
-Zum Bauen:
+The setup includes the application, watcher, icon, README, license, and Python runtime. Python and development tools are not required on the destination computer.
+
+## Build
+
+Requirements on the build computer:
+
+- Windows 10 or Windows 11
+- 64-bit Python 3.13 or a compatible supported Python version
+- PyInstaller
+- Inno Setup 6
+
+Build and test the complete release:
 
 ```powershell
-.\build_release.ps1
+.\build-installer.ps1
 ```
 
-## Start
+The final installer is written to:
 
-1. `start_valorant_media_guard.bat` doppelklicken.
-2. Wenn Python fehlt, fragt die Startdatei, ob Python installiert werden soll.
-3. Den passenden Tab auswaehlen: `Valorant` oder `LoL`.
-4. Im Spiel am besten `Fenster-Vollbild` oder `Randlos` nutzen, falls Screenshots bei exklusivem Vollbild schwarz bleiben.
-5. `Bereich waehlen` klicken und den Bereich markieren, der ueberwacht werden soll.
-6. Bei Valorant `Farbe waehlen` klicken oder die Farbe manuell eintragen, z. B. `#ff4655` oder `255,70,85`.
-7. Unter `Medienwiedergabe` auf `Aktualisieren` klicken und z. B. Spotify, Browser oder Player auswaehlen.
-8. Entweder `Play/Pause steuern` oder `Nur Lautstaerke anpassen` waehlen.
-9. Bei Lautstaerke-Modus `Tot %` und `Nicht tot %` eintragen und mit `Test Tot` / `Test Nicht tot` pruefen.
-10. `Start` klicken.
+```text
+dist\Gangcord-Setup-2.0.1.exe
+```
 
-## Valorant-Tipps
+## Project Structure
 
-- `Rot %`: So viel Prozent des gewaehlten Bereichs muessen die gespeicherte Farbe enthalten. Standard: `1.0`.
-- `Farbe`: Die erkannte Farbe wird als Farbfeld und Text angezeigt. Manuell moeglich sind z. B. `#ff4655`, `ff4655`, `255,70,85`, `rgb(255,70,85)` oder `rgba(255,70,85,1)`.
-- `Toleranz`: Standard ist `0`, damit nur exakt die gespeicherte Farbe erkannt wird.
+```text
+assets/                  Windows application icon
+installer/               Inno Setup script and license
+src/                     Gangcord application and watcher
+tests/                   Unit and UI smoke tests
+Gangcord.spec             PyInstaller definition for the application
+GangcordWatcher.spec      PyInstaller definition for the watcher
+build-installer.ps1       Reproducible release build
+README.md                 Project documentation
+```
 
-## LoL-Tipps
+## Troubleshooting
 
-- Markiere nur den kleinen Bereich, in dem die Zahl herunterzaehlt. Je kleiner und klarer der Bereich ist, desto besser.
-- `Hell %`: So viel Prozent des Bereichs muessen helle Pixel enthalten. Standard: `0.25`.
-- `Hell min`: Ab welchem Farbwert ein Pixel als hell gilt. Standard: `150`.
-- `Ziffer Hoehe` und `Ziffer Flaeche`: Mindestgroesse fuer ziffernartige Formen.
-- `Komponenten`: Wie viele ziffernartige Formen mindestens gefunden werden muessen. Standard: `1`.
+- Use borderless or windowed fullscreen if exclusive fullscreen produces black captures.
+- Select a small and stable region without unrelated UI elements.
+- Increase **Stable reads** when brief transitions trigger unwanted actions.
+- Refresh media sessions after opening Spotify, a browser, or another player.
+- Use the **System** theme to follow the Windows app theme automatically.
 
-## Allgemein
+## Privacy
 
-- Oben im Programm steht die installierte Version und die neueste Version auf GitHub.
-- Wenn GitHub neuer ist, erscheint der Button `Jetzt aktualisieren`.
-- Das Update laedt bei der EXE eine neue EXE von GitHub, ersetzt die alte Datei nach dem Schliessen und startet die App neu. Im Quellordner wird weiterhin per ZIP aktualisiert.
-- Git muss fuer normale Nutzer nicht installiert sein.
-- Die Oberflaeche unterstuetzt Hell/Dunkel/System-Design.
-- Die Inhalte der Tabs sind scrollbar und bleiben auch auf kleinen Bildschirmen sowie bei hoher Windows-Skalierung nutzbar.
-- Die automatische Spielerkennung wird durch `Game Media Watcher.exe` umgesetzt. Der Watcher prueft nur laufende Prozessnamen und greift nicht in Spiele ein.
-- Erkannte Prozesse:
-  - Valorant: `VALORANT-Win64-Shipping.exe`, `RiotClientServices.exe`
-  - League of Legends: `LeagueClient.exe`, `LeagueClientUx.exe`, `League of Legends.exe`
-- Ein PNG-Ersatzbild mit `gif` im Dateinamen wird als Headerbild genutzt; `Gangcord.gif` bleibt nur Fallback.
-- `logo der app.png` wird als App-Logo genutzt.
-- Valorant und LoL speichern Bereich, Ziel, Modus und Lautstaerke getrennt.
-- Wenn die Erkennung wackelt, waehle einen kleineren, klareren Bereich.
-- Wenn dein Mediaplayer direkte `Play`/`Pause`-Befehle ignoriert, stelle in der App auf `Fallback: Medien-Toggle bei jedem Wechsel`.
-- Die Medienziel-Auswahl wirkt auf die Lautstaerke der ausgewaehlten Windows-Audio-Sitzung.
-- `Stabil` hoeher machen, wenn kurze Bildschirmwechsel stoeren.
-- Die Einstellungen werden unter `%LOCALAPPDATA%\Game Media Control\config.json` gespeichert. Logs liegen unter `%LOCALAPPDATA%\Game Media Control\Logs\`. Neben der EXE wird keine neue Konfigurationsdatei angelegt.
+All detection happens locally. Gangcord does not upload screenshots or media-session information.
+
+## License
+
+Gangcord is free for private, non-commercial use. Commercial use requires prior written permission. See [LICENSE.txt](installer/LICENSE.txt) for the complete terms.

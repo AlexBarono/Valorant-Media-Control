@@ -1,0 +1,31 @@
+GANGCORD NON-COMMERCIAL LICENSE
+Version 1.0
+
+Important notice
+This is a simple non-commercial license intended for this project. Before a public release or any commercial use, the final license text should be reviewed by a qualified legal professional.
+
+1. Free private use
+Gangcord may be used free of charge for private, personal, and non-commercial purposes.
+
+2. Commercial use
+Commercial use is prohibited without prior written permission from the copyright holder or developer. This includes use in a commercial product, a paid service, a business workflow offered for compensation, or any activity primarily intended for commercial advantage.
+
+3. Sale and paid distribution
+Gangcord may not be sold, rented, leased, sublicensed for a fee, or otherwise distributed in exchange for payment.
+
+4. Non-commercial redistribution
+Unmodified copies of Gangcord may be redistributed for non-commercial purposes, provided that this license is included and all copyright and attribution notices remain intact.
+
+5. No warranty
+Gangcord is provided "as is" without warranties of any kind, whether express or implied. No guarantee is made that the application will be error-free, uninterrupted, secure, or suitable for a particular purpose.
+
+6. Use at your own risk
+Use of Gangcord is entirely at the user's own risk. Users are responsible for verifying that the application is appropriate for their systems and intended use.
+
+7. Limitation of liability
+To the maximum extent permitted by applicable law, the copyright holder and developer will not be liable for data loss, damage, service interruption, system failure, loss of profit, or any other direct or indirect loss arising from use of, or inability to use, Gangcord.
+
+8. Game and anti-cheat boundaries
+Gangcord may only observe selected screen pixels and Windows process names. It may not be used to modify game files, inspect game memory, interfere with the Riot Client, bypass anti-cheat technology, or gain an unfair competitive advantage.
+
+Copyright (c) 2026 GallA. All rights reserved except as expressly granted above.
