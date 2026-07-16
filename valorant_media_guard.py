@@ -15,12 +15,13 @@ import urllib.request
 import uuid
 import webbrowser
 import zipfile
-from tkinter import messagebox, ttk
+from tkinter import ttk
 from ctypes import wintypes
 
 
 APP_NAME = "Game Media Control"
-APP_VERSION = "1.3.5"
+APP_VERSION = "1.3.6"
+APP_DIR_NAME = "Game Media Control"
 
 
 def get_app_dir():
@@ -39,8 +40,25 @@ def get_resource_dir():
     return get_app_dir()
 
 
+def get_user_data_dir():
+    base_dir = os.environ.get("LOCALAPPDATA")
+    if not base_dir:
+        base_dir = os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    return os.path.abspath(os.path.join(base_dir, APP_DIR_NAME))
+
+
+def ensure_directory(path):
+    try:
+        os.makedirs(path, exist_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 APP_DIR = get_app_dir()
 RESOURCE_DIR = get_resource_dir()
+USER_DATA_DIR = get_user_data_dir()
+LOG_DIR = os.path.join(USER_DATA_DIR, "Logs")
 
 
 def resource_path(file_name):
@@ -50,7 +68,11 @@ def resource_path(file_name):
     return os.path.join(RESOURCE_DIR, file_name)
 
 
-CONFIG_PATH = os.path.join(APP_DIR, "config.json")
+CONFIG_PATH = os.path.join(USER_DATA_DIR, "config.json")
+LEGACY_CONFIG_PATHS = (
+    os.path.join(APP_DIR, "config.json"),
+    os.path.join(os.getcwd(), "config.json"),
+)
 README_PATH = resource_path("README.md")
 FALLBACK_BACKGROUND_PATH = resource_path("Gangcord.gif")
 LOGO_PATH = resource_path("logo der app.png")
@@ -80,6 +102,8 @@ VALORANT_AUTO_RED_MIN_GAP = 35
 
 WM_APPCOMMAND = 0x0319
 HWND_BROADCAST = ctypes.c_void_p(0xFFFF)
+ERROR_ALREADY_EXISTS = 183
+APP_MUTEX_NAME = "Local\\GameMediaControl_Main_Instance"
 APPCOMMAND_MEDIA_PLAY = 46
 APPCOMMAND_MEDIA_PAUSE = 47
 VK_MEDIA_PLAY_PAUSE = 0xB3
@@ -199,6 +223,8 @@ kernel32.QueryFullProcessImageNameW.argtypes = [HANDLE, wintypes.DWORD, wintypes
 kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
 kernel32.CloseHandle.argtypes = [HANDLE]
 kernel32.CloseHandle.restype = wintypes.BOOL
+kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+kernel32.CreateMutexW.restype = HANDLE
 
 
 CLSCTX_ALL = 0x17
@@ -207,6 +233,16 @@ RPC_E_CHANGED_MODE = ctypes.c_long(0x80010106).value
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 E_RENDER = 0
 E_MULTIMEDIA = 1
+
+AUTO_LAUNCH_LABELS = {
+    "none": "Nein",
+    "valorant": "Nur bei Valorant",
+    "lol": "Nur bei League of Legends",
+    "both": "Bei Valorant und League of Legends",
+}
+AUTO_LAUNCH_VALUES = {label: value for value, label in AUTO_LAUNCH_LABELS.items()}
+WATCHER_EXE_NAME = "Game Media Watcher.exe"
+WATCHER_RUN_NAME = "Game Media Control Watcher"
 
 CLSID_MMDEVICE_ENUMERATOR = GUID("BCDE0395-E52F-467C-8E3D-C4579291692E")
 IID_IMMDEVICE_ENUMERATOR = GUID("A95664D2-9614-4F35-A746-DE8DB63617E6")
@@ -246,6 +282,66 @@ DEFAULT_CONFIG = {
     "lol_target_label": "",
     "lol_dead_volume": 100,
     "lol_alive_volume": 25,
+    "theme_mode": "system",
+    "auto_launch_mode": "none",
+}
+
+LAST_CONFIG_ERROR = ""
+
+THEME_LABELS = {
+    "system": "System",
+    "light": "Hell",
+    "dark": "Dunkel",
+}
+THEME_VALUES = {label: value for value, label in THEME_LABELS.items()}
+
+FLUENT_PALETTES = {
+    "light": {
+        "window": "#f3f3f3",
+        "surface": "#ffffff",
+        "surface_alt": "#fafafa",
+        "surface_hover": "#f8f8f8",
+        "border": "#d6d6d6",
+        "border_focus": "#0067c0",
+        "text": "#1a1a1a",
+        "muted": "#5f6368",
+        "disabled": "#8a8a8a",
+        "accent": "#0067c0",
+        "accent_hover": "#0a75d9",
+        "accent_pressed": "#005a9e",
+        "accent_text": "#ffffff",
+        "danger": "#c42b1c",
+        "danger_hover": "#d13438",
+        "success": "#107c10",
+        "warning": "#9d5d00",
+        "shadow": "#d0d0d0",
+        "hero_overlay": "#000000",
+        "input": "#ffffff",
+        "selection": "#cfe8ff",
+    },
+    "dark": {
+        "window": "#202020",
+        "surface": "#2b2b2b",
+        "surface_alt": "#252525",
+        "surface_hover": "#333333",
+        "border": "#454545",
+        "border_focus": "#60cdff",
+        "text": "#f3f3f3",
+        "muted": "#c8c8c8",
+        "disabled": "#8a8a8a",
+        "accent": "#60cdff",
+        "accent_hover": "#7bd7ff",
+        "accent_pressed": "#4cc2ff",
+        "accent_text": "#001b2e",
+        "danger": "#ff6b6b",
+        "danger_hover": "#ff7a7a",
+        "success": "#6ccb5f",
+        "warning": "#f9c23c",
+        "shadow": "#121212",
+        "hero_overlay": "#000000",
+        "input": "#1f1f1f",
+        "selection": "#004b73",
+    },
 }
 
 
@@ -517,21 +613,215 @@ def set_audio_session_volume(process_name, volume_percent):
 
 
 def load_config():
+    global LAST_CONFIG_ERROR
     data = dict(DEFAULT_CONFIG)
-    if os.path.exists(CONFIG_PATH):
+    checked_paths = [CONFIG_PATH]
+    for path in LEGACY_CONFIG_PATHS:
+        if path not in checked_paths:
+            checked_paths.append(path)
+
+    for path in checked_paths:
+        if not os.path.exists(path):
+            continue
         try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as handle:
+            with open(path, "r", encoding="utf-8") as handle:
                 loaded = json.load(handle)
             if isinstance(loaded, dict):
                 data.update(loaded)
-        except Exception:
-            pass
+                LAST_CONFIG_ERROR = ""
+                return data
+        except Exception as exc:
+            LAST_CONFIG_ERROR = f"Einstellungen konnten nicht gelesen werden: {exc}"
+            continue
+    if LAST_CONFIG_ERROR:
+        return data
     return data
 
 
+def migrate_legacy_config_if_needed():
+    if os.path.exists(CONFIG_PATH):
+        return
+    for legacy_path in LEGACY_CONFIG_PATHS:
+        if not os.path.exists(legacy_path):
+            continue
+        try:
+            ensure_directory(USER_DATA_DIR)
+            shutil.copy2(legacy_path, CONFIG_PATH)
+            return
+        except Exception:
+            continue
+
+
 def save_config(data):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2)
+    global LAST_CONFIG_ERROR
+    temp_path = ""
+    try:
+        if not ensure_directory(USER_DATA_DIR):
+            raise OSError(f"Ordner konnte nicht erstellt werden: {USER_DATA_DIR}")
+        fd, temp_path = tempfile.mkstemp(prefix="config_", suffix=".tmp", dir=USER_DATA_DIR)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, CONFIG_PATH)
+        LAST_CONFIG_ERROR = ""
+        return True
+    except Exception as exc:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        LAST_CONFIG_ERROR = f"Einstellungen konnten nicht gespeichert werden: {exc}"
+        return False
+
+
+def detect_windows_theme():
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        ) as key:
+            apps_use_light_theme = winreg.QueryValueEx(key, "AppsUseLightTheme")[0]
+        return "light" if apps_use_light_theme else "dark"
+    except Exception:
+        return "light"
+
+
+def normalize_theme_mode(value):
+    text = str(value or "system").strip().lower()
+    if text in ("hell", "light"):
+        return "light"
+    if text in ("dunkel", "dark"):
+        return "dark"
+    return "system"
+
+
+def resolved_theme(mode):
+    normalized = normalize_theme_mode(mode)
+    if normalized == "system":
+        return detect_windows_theme()
+    return normalized
+
+
+def normalize_auto_launch_mode(value):
+    text = str(value or "none").strip().lower()
+    aliases = {
+        "nein": "none",
+        "no": "none",
+        "off": "none",
+        "valorant": "valorant",
+        "lol": "lol",
+        "league": "lol",
+        "league of legends": "lol",
+        "both": "both",
+        "beide": "both",
+    }
+    return aliases.get(text, text if text in AUTO_LAUNCH_LABELS else "none")
+
+
+def get_watcher_path():
+    return os.path.join(APP_DIR, WATCHER_EXE_NAME)
+
+
+def stop_watcher_process():
+    try:
+        subprocess.run(
+            ["taskkill", "/IM", WATCHER_EXE_NAME, "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=8,
+        )
+    except Exception:
+        pass
+
+
+def start_watcher_process():
+    watcher_path = get_watcher_path()
+    if not os.path.exists(watcher_path):
+        return False, f"Watcher nicht gefunden: {watcher_path}"
+    try:
+        subprocess.Popen(
+            [watcher_path],
+            cwd=APP_DIR,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return True, ""
+    except Exception as exc:
+        return False, f"Watcher konnte nicht gestartet werden: {exc}"
+
+
+def configure_watcher_autostart(mode):
+    mode = normalize_auto_launch_mode(mode)
+    try:
+        import winreg
+
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+            if mode == "none":
+                try:
+                    winreg.DeleteValue(key, WATCHER_RUN_NAME)
+                except FileNotFoundError:
+                    pass
+                stop_watcher_process()
+                return True, "Automatische Spielerkennung deaktiviert."
+
+            watcher_path = get_watcher_path()
+            if not os.path.exists(watcher_path):
+                return False, f"Watcher nicht gefunden: {watcher_path}"
+
+            command = f'"{watcher_path}"'
+            winreg.SetValueEx(key, WATCHER_RUN_NAME, 0, winreg.REG_SZ, command)
+            started, start_message = start_watcher_process()
+            if not started:
+                return False, start_message
+            return True, "Automatische Spielerkennung wird beim Windows-Start geladen."
+    except Exception as exc:
+        return False, f"Autostart konnte nicht geaendert werden: {exc}"
+
+
+def create_single_instance_mutex():
+    kernel32.SetLastError(0)
+    handle = kernel32.CreateMutexW(None, False, APP_MUTEX_NAME)
+    already_running = ctypes.get_last_error() == ERROR_ALREADY_EXISTS
+    return handle, already_running
+
+
+def rounded_canvas_rect(canvas, x1, y1, x2, y2, radius, **kwargs):
+    radius = max(0, min(radius, int((x2 - x1) / 2), int((y2 - y1) / 2)))
+    points = [
+        x1 + radius,
+        y1,
+        x2 - radius,
+        y1,
+        x2,
+        y1,
+        x2,
+        y1 + radius,
+        x2,
+        y2 - radius,
+        x2,
+        y2,
+        x2 - radius,
+        y2,
+        x1 + radius,
+        y2,
+        x1,
+        y2,
+        x1,
+        y2 - radius,
+        x1,
+        y1 + radius,
+        x1,
+        y1,
+    ]
+    return canvas.create_polygon(points, smooth=True, **kwargs)
 
 
 def is_replacement_header_image(file_name):
@@ -904,6 +1194,7 @@ setlocal
 set "OLD_EXE={current_exe_path}"
 set "NEW_EXE={new_exe_path}"
 set "APP_PID={current_pid}"
+set "SCRIPT_DIR=%~dp0"
 
 :wait_for_app
 tasklist /FI "PID eq %APP_PID%" 2>NUL | findstr /C:"%APP_PID%" >NUL
@@ -925,7 +1216,9 @@ if exist "%NEW_EXE%" (
 )
 
 start "" "%OLD_EXE%"
+cd /d "%TEMP%"
 del "%~f0"
+rmdir "%SCRIPT_DIR%" 2>NUL
 """
     with open(script_path, "w", encoding="utf-8") as handle:
         handle.write(script)
@@ -938,8 +1231,7 @@ def prepare_exe_update(download_url=None):
             "message": download_and_apply_zip_update(),
         }
 
-    update_dir = os.path.join(APP_DIR, "_update")
-    os.makedirs(update_dir, exist_ok=True)
+    update_dir = tempfile.mkdtemp(prefix="game_media_control_update_")
 
     current_exe_path = os.path.abspath(sys.executable)
     new_exe_path = os.path.join(update_dir, f"{APP_NAME}.new.exe")
@@ -1443,7 +1735,11 @@ class App(tk.Tk):
         start_height = min(860, self.winfo_screenheight() - 80)
         self.geometry(f"{start_width}x{start_height}")
 
+        migrate_legacy_config_if_needed()
         self.config_data = load_config()
+        self.theme_mode = normalize_theme_mode(self.config_data.get("theme_mode", "system"))
+        self.active_theme = resolved_theme(self.theme_mode)
+        self.palette = FLUENT_PALETTES[self.active_theme]
         self.events = queue.Queue()
         self.stop_event = threading.Event()
         self.monitor_thread = None
@@ -1463,6 +1759,7 @@ class App(tk.Tk):
         self.last_hero_height = None
         self.root_frame = None
         self.notebook = None
+        self.scroll_pages = []
         self.update_available = False
         self.update_check_running = False
         self.manual_update_url = None
@@ -1472,6 +1769,11 @@ class App(tk.Tk):
         self.latest_version_var = tk.StringVar(value="-")
         self.update_button_text_var = tk.StringVar(value="Update pruefen")
         self.update_button = None
+        self.theme_choice_var = tk.StringVar(value=THEME_LABELS.get(self.theme_mode, "System"))
+        self.theme_combo = None
+        self.auto_launch_choice_var = tk.StringVar(
+            value=AUTO_LAUNCH_LABELS.get(normalize_auto_launch_mode(self.config_data.get("auto_launch_mode")), "Nein")
+        )
         for variable in (self.update_status_var, self.current_version_var, self.latest_version_var):
             variable.trace_add("write", lambda *_args: self.draw_hero())
 
@@ -1515,6 +1817,7 @@ class App(tk.Tk):
         self.lol_alive_volume_var = tk.StringVar(value=str(self.config_data.get("lol_alive_volume", 25)))
 
         self.load_app_assets()
+        self.apply_theme()
         self.create_background()
         self.build_ui()
         self.refresh_labels()
@@ -1522,6 +1825,183 @@ class App(tk.Tk):
         self.after(400, self.refresh_audio_sessions)
         self.after(900, self.check_for_updates)
         self.after(200, self.drain_events)
+
+    def apply_theme(self):
+        self.theme_mode = normalize_theme_mode(getattr(self, "theme_mode", self.config_data.get("theme_mode", "system")))
+        self.active_theme = resolved_theme(self.theme_mode)
+        self.palette = FLUENT_PALETTES[self.active_theme]
+        palette = self.palette
+
+        try:
+            style = ttk.Style(self)
+            if style.theme_use() != "clam":
+                style.theme_use("clam")
+        except tk.TclError:
+            style = ttk.Style(self)
+        self.style = style
+
+        self.configure(bg=palette["window"])
+        default_font = ("Segoe UI", 10)
+        heading_font = ("Segoe UI", 11, "bold")
+        title_font = ("Segoe UI", 17, "bold")
+
+        style.configure(".", font=default_font, background=palette["window"], foreground=palette["text"])
+        style.configure("TFrame", background=palette["window"])
+        style.configure("Root.TFrame", background=palette["window"])
+        style.configure("Toolbar.TFrame", background=palette["surface"], borderwidth=1, relief="solid")
+        style.configure("Card.TFrame", background=palette["surface"], borderwidth=1, relief="solid")
+        style.configure("InnerCard.TFrame", background=palette["surface"])
+        style.configure("TLabel", background=palette["surface"], foreground=palette["text"])
+        style.configure("PageTitle.TLabel", background=palette["window"], foreground=palette["text"], font=heading_font)
+        style.configure("Card.TLabel", background=palette["surface"], foreground=palette["text"])
+        style.configure("SectionTitle.TLabel", background=palette["surface"], foreground=palette["text"], font=heading_font)
+        style.configure("Muted.TLabel", background=palette["surface"], foreground=palette["muted"])
+        style.configure("Value.TLabel", background=palette["surface"], foreground=palette["text"])
+        style.configure("Log.TLabel", background=palette["surface_alt"], foreground=palette["muted"], padding=(12, 9))
+        style.configure("HeroTitle.TLabel", font=title_font)
+
+        style.configure(
+            "TButton",
+            background=palette["surface_alt"],
+            foreground=palette["text"],
+            bordercolor=palette["border"],
+            lightcolor=palette["surface_alt"],
+            darkcolor=palette["surface_alt"],
+            focusthickness=2,
+            focuscolor=palette["border_focus"],
+            padding=(14, 8),
+            relief="flat",
+        )
+        style.map(
+            "TButton",
+            background=[("pressed", palette["surface_hover"]), ("active", palette["surface_hover"])],
+            foreground=[("disabled", palette["disabled"])],
+            bordercolor=[("focus", palette["border_focus"]), ("active", palette["border_focus"])],
+        )
+        style.configure(
+            "Accent.TButton",
+            background=palette["accent"],
+            foreground=palette["accent_text"],
+            bordercolor=palette["accent"],
+            lightcolor=palette["accent"],
+            darkcolor=palette["accent"],
+        )
+        style.map(
+            "Accent.TButton",
+            background=[("pressed", palette["accent_pressed"]), ("active", palette["accent_hover"])],
+            foreground=[("disabled", palette["disabled"]), ("!disabled", palette["accent_text"])],
+        )
+        style.configure(
+            "Danger.TButton",
+            background=palette["danger"],
+            foreground="#ffffff",
+            bordercolor=palette["danger"],
+            lightcolor=palette["danger"],
+            darkcolor=palette["danger"],
+        )
+        style.map("Danger.TButton", background=[("pressed", palette["danger"]), ("active", palette["danger_hover"])])
+
+        for widget_style in ("TEntry", "TCombobox"):
+            style.configure(
+                widget_style,
+                fieldbackground=palette["input"],
+                background=palette["input"],
+                foreground=palette["text"],
+                bordercolor=palette["border"],
+                lightcolor=palette["input"],
+                darkcolor=palette["input"],
+                insertcolor=palette["text"],
+                padding=(8, 7),
+            )
+            style.map(
+                widget_style,
+                fieldbackground=[("readonly", palette["input"]), ("focus", palette["input"])],
+                bordercolor=[("focus", palette["border_focus"]), ("active", palette["border_focus"])],
+                foreground=[("disabled", palette["disabled"]), ("!disabled", palette["text"])],
+            )
+
+        style.configure("TCheckbutton", background=palette["surface"], foreground=palette["text"], padding=(2, 6))
+        style.configure("TRadiobutton", background=palette["surface"], foreground=palette["text"], padding=(2, 6))
+        style.map(
+            "TCheckbutton",
+            background=[("active", palette["surface"])],
+            foreground=[("disabled", palette["disabled"]), ("!disabled", palette["text"])],
+        )
+        style.map(
+            "TRadiobutton",
+            background=[("active", palette["surface"])],
+            foreground=[("disabled", palette["disabled"]), ("!disabled", palette["text"])],
+        )
+
+        style.configure(
+            "TNotebook",
+            background=palette["window"],
+            borderwidth=0,
+            tabmargins=(0, 0, 0, 0),
+        )
+        style.configure(
+            "TNotebook.Tab",
+            background=palette["surface_alt"],
+            foreground=palette["muted"],
+            padding=(18, 10),
+            borderwidth=0,
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", palette["surface"]), ("active", palette["surface_hover"])],
+            foreground=[("selected", palette["text"]), ("active", palette["text"])],
+        )
+        style.configure("Vertical.TScrollbar", background=palette["surface_alt"], troughcolor=palette["surface"])
+
+        self.apply_widget_theme()
+
+    def apply_widget_theme(self):
+        palette = self.palette
+        if self.background_label:
+            self.background_label.configure(bg=palette["window"])
+        if self.hero_canvas:
+            self.hero_canvas.configure(bg=palette["window"])
+            self.draw_hero()
+        for page in getattr(self, "scroll_pages", []):
+            page["canvas"].configure(bg=palette["window"])
+        if hasattr(self, "readme_text"):
+            self.readme_text.configure(
+                bg=palette["surface"],
+                fg=palette["text"],
+                insertbackground=palette["text"],
+                selectbackground=palette["selection"],
+                relief="flat",
+                borderwidth=0,
+            )
+        if self.valorant_color_swatch:
+            self.valorant_color_swatch.configure(highlightbackground=palette["border"], highlightcolor=palette["border"])
+        self.refresh_labels_if_ready()
+
+    def refresh_labels_if_ready(self):
+        if hasattr(self, "region_var"):
+            try:
+                self.refresh_labels()
+            except Exception:
+                pass
+
+    def on_theme_selected(self, _event=None):
+        selected = self.theme_choice_var.get()
+        self.theme_mode = THEME_VALUES.get(selected, "system")
+        self.config_data["theme_mode"] = self.theme_mode
+        save_config(self.config_data)
+        self.apply_theme()
+
+    def on_auto_launch_selected(self, _event=None):
+        selected = self.auto_launch_choice_var.get()
+        mode = AUTO_LAUNCH_VALUES.get(selected, "none")
+        self.config_data["auto_launch_mode"] = mode
+        save_config(self.config_data)
+        ok, message = configure_watcher_autostart(mode)
+        if ok:
+            self.set_game_status("valorant", log=message)
+            self.set_game_status("lol", log=message)
+        else:
+            self.show_warning("Autostart", message)
 
     def load_app_assets(self):
         if os.path.exists(LOGO_PATH):
@@ -1553,8 +2033,8 @@ class App(tk.Tk):
                 self.banner_image = self.background_frames[0]
 
     def create_background(self):
-        self.configure(bg="black")
-        self.background_label = tk.Label(self, bg="black", bd=0)
+        self.configure(bg=self.palette["window"])
+        self.background_label = tk.Label(self, bg=self.palette["window"], bd=0)
         self.background_label.place(x=0, y=0, relwidth=1, relheight=1)
         self.background_label.lower()
         if self.background_frames:
@@ -1571,34 +2051,153 @@ class App(tk.Tk):
         self.after(90, self.animate_background)
 
     def build_ui(self):
-        root = ttk.Frame(self, padding=(18, 16, 18, 18))
+        root = ttk.Frame(self, padding=(20, 18, 20, 20), style="Root.TFrame")
         self.root_frame = root
         root.pack(fill="both", expand=True)
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(1, weight=1)
+        root.rowconfigure(2, weight=1)
 
         self.build_hero(root)
+        self.build_toolbar(root)
 
         notebook = ttk.Notebook(root)
         self.notebook = notebook
-        notebook.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+        notebook.grid(row=2, column=0, sticky="nsew", pady=(12, 0))
 
-        valorant_tab = ttk.Frame(notebook, padding=12)
-        lol_tab = ttk.Frame(notebook, padding=12)
-        readme_tab = ttk.Frame(notebook, padding=12)
-        notebook.add(valorant_tab, text="Valorant")
-        notebook.add(lol_tab, text="LoL")
-        notebook.add(readme_tab, text="README")
+        valorant_tab = self.create_scrollable_tab(notebook, "Valorant")
+        lol_tab = self.create_scrollable_tab(notebook, "LoL")
+        readme_tab = self.create_scrollable_tab(notebook, "README")
 
         self.build_valorant_tab(valorant_tab)
         self.build_lol_tab(lol_tab)
         self.build_readme_tab(readme_tab)
+        self.bind_all("<FocusIn>", self.scroll_focused_widget_into_view, add="+")
+        self.bind_all("<MouseWheel>", self.on_global_mousewheel, add="+")
         self.after_idle(self.resize_hero)
 
+    def create_scrollable_tab(self, notebook, title):
+        outer = ttk.Frame(notebook, style="Root.TFrame")
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=1)
+        notebook.add(outer, text=title)
+
+        canvas = tk.Canvas(outer, highlightthickness=0, bd=0, bg=self.palette["window"])
+        vertical = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        horizontal = ttk.Scrollbar(outer, orient="horizontal", command=canvas.xview)
+        canvas.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+
+        content = ttk.Frame(canvas, padding=16, style="Root.TFrame")
+        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+        content.columnconfigure(0, weight=1)
+
+        def update_scroll_region(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure(window_id, width=max(canvas.winfo_width(), content.winfo_reqwidth()))
+
+        def resize_content(event):
+            canvas.itemconfigure(window_id, width=max(event.width, content.winfo_reqwidth()))
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        content.bind("<Configure>", update_scroll_region)
+        canvas.bind("<Configure>", resize_content)
+        canvas.bind("<MouseWheel>", lambda event, c=canvas: self.on_canvas_mousewheel(event, c))
+        content.bind("<MouseWheel>", lambda event, c=canvas: self.on_canvas_mousewheel(event, c))
+
+        self.scroll_pages.append({"canvas": canvas, "content": content})
+        return content
+
+    def on_canvas_mousewheel(self, event, canvas):
+        if event.state & 0x0001:
+            canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+        else:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"
+
+    def on_global_mousewheel(self, event):
+        widget = self.winfo_containing(event.x_root, event.y_root)
+        if widget is None:
+            return
+        for page in self.scroll_pages:
+            if self.is_descendant(widget, page["content"]) or widget == page["canvas"]:
+                return self.on_canvas_mousewheel(event, page["canvas"])
+        return None
+
+    def is_descendant(self, widget, ancestor):
+        current = widget
+        while current is not None:
+            if current == ancestor:
+                return True
+            current = getattr(current, "master", None)
+        return False
+
+    def scroll_focused_widget_into_view(self, event):
+        widget = event.widget
+        for page in self.scroll_pages:
+            content = page["content"]
+            canvas = page["canvas"]
+            if not self.is_descendant(widget, content):
+                continue
+            self.after_idle(lambda c=canvas, w=widget: self.scroll_widget_into_view(c, w))
+            break
+
+    def scroll_widget_into_view(self, canvas, widget):
+        try:
+            canvas.update_idletasks()
+            widget_y = widget.winfo_rooty() - canvas.winfo_rooty()
+            widget_bottom = widget_y + widget.winfo_height()
+            canvas_height = canvas.winfo_height()
+            first, last = canvas.yview()
+            if widget_y < 12:
+                canvas.yview_moveto(max(0.0, first - (12 - widget_y) / max(canvas.bbox("all")[3], 1)))
+            elif widget_bottom > canvas_height - 12:
+                canvas.yview_moveto(min(1.0, first + (widget_bottom - canvas_height + 12) / max(canvas.bbox("all")[3], 1)))
+        except Exception:
+            pass
+
+    def build_toolbar(self, parent):
+        toolbar = ttk.Frame(parent, padding=(14, 10), style="Toolbar.TFrame")
+        toolbar.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+        toolbar.columnconfigure(0, weight=1)
+        toolbar.columnconfigure(2, weight=0)
+        toolbar.columnconfigure(4, weight=0)
+
+        config_text = f"Einstellungen: {CONFIG_PATH}"
+        ttk.Label(toolbar, text=config_text, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(toolbar, text="Autostart", style="Muted.TLabel").grid(row=0, column=1, sticky="e", padx=(12, 8))
+        self.auto_launch_combo = ttk.Combobox(
+            toolbar,
+            textvariable=self.auto_launch_choice_var,
+            values=list(AUTO_LAUNCH_VALUES.keys()),
+            width=26,
+            state="readonly",
+        )
+        self.auto_launch_combo.grid(row=0, column=2, sticky="e")
+        self.auto_launch_combo.bind("<<ComboboxSelected>>", self.on_auto_launch_selected)
+
+        ttk.Label(toolbar, text="Design", style="Muted.TLabel").grid(row=0, column=3, sticky="e", padx=(12, 8))
+        self.theme_combo = ttk.Combobox(
+            toolbar,
+            textvariable=self.theme_choice_var,
+            values=list(THEME_VALUES.keys()),
+            width=10,
+            state="readonly",
+        )
+        self.theme_combo.grid(row=0, column=4, sticky="e")
+        self.theme_combo.bind("<<ComboboxSelected>>", self.on_theme_selected)
+
     def build_hero(self, parent):
-        self.hero_canvas = tk.Canvas(parent, height=190, highlightthickness=0, bd=0, bg="black")
+        self.hero_canvas = tk.Canvas(parent, height=190, highlightthickness=0, bd=0, bg=self.palette["window"])
         self.hero_canvas.grid(row=0, column=0, sticky="ew")
-        self.update_button = ttk.Button(self.hero_canvas, textvariable=self.update_button_text_var, command=self.update_button_clicked)
+        self.update_button = ttk.Button(
+            self.hero_canvas,
+            textvariable=self.update_button_text_var,
+            command=self.update_button_clicked,
+            style="Accent.TButton",
+        )
         self.hero_canvas.bind("<Configure>", lambda _event: self.draw_hero())
         self.bind("<Configure>", lambda _event: self.resize_hero())
         self.resize_hero()
@@ -1618,9 +2217,33 @@ class App(tk.Tk):
             return
 
         canvas = self.hero_canvas
+        palette = self.palette
         width = max(canvas.winfo_width(), 1)
         height = max(canvas.winfo_height(), 1)
         canvas.delete("all")
+
+        shadow_offset = 4
+        rounded_canvas_rect(
+            canvas,
+            4,
+            shadow_offset,
+            width - 4,
+            height - 2,
+            22,
+            fill=palette["shadow"],
+            outline="",
+        )
+        rounded_canvas_rect(
+            canvas,
+            0,
+            0,
+            width - 8,
+            height - 6,
+            22,
+            fill=palette["surface"],
+            outline=palette["border"],
+        )
+        canvas.save_region = None
 
         if self.banner_image:
             image_width = self.banner_image.width()
@@ -1642,9 +2265,9 @@ class App(tk.Tk):
                 anchor="nw",
             )
         else:
-            canvas.create_rectangle(0, 0, width, height, fill="#050505", outline="")
+            rounded_canvas_rect(canvas, 0, 0, width - 8, height - 6, 22, fill=palette["surface_alt"], outline="")
 
-        canvas.create_rectangle(0, 0, width, height, fill="#000000", stipple="gray50", outline="")
+        rounded_canvas_rect(canvas, 0, 0, width - 8, height - 6, 22, fill=palette["hero_overlay"], stipple="gray50", outline="")
 
         left = 34
         if self.logo_header_image:
@@ -1707,17 +2330,32 @@ class App(tk.Tk):
             window=self.update_button,
         )
 
+    def create_card(self, parent, row, title, pady=(0, 12)):
+        shadow = ttk.Frame(parent, style="Root.TFrame")
+        shadow.grid(row=row, column=0, sticky="ew", pady=pady)
+        shadow.columnconfigure(0, weight=1)
+
+        card = ttk.Frame(shadow, padding=16, style="Card.TFrame")
+        card.grid(row=0, column=0, sticky="ew")
+        card.columnconfigure(0, weight=1)
+
+        ttk.Label(card, text=title, style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 12))
+        body = ttk.Frame(card, style="InnerCard.TFrame")
+        body.grid(row=1, column=0, sticky="ew")
+        body.columnconfigure(0, weight=1)
+        return body
+
     def build_readme_tab(self, parent):
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(1, weight=1)
 
-        tools = ttk.Frame(parent)
+        tools = ttk.Frame(parent, style="Root.TFrame")
         tools.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         tools.columnconfigure(0, weight=1)
-        ttk.Label(tools, text="README.md", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(tools, text="README.md", style="PageTitle.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Button(tools, text="Neu laden", command=self.load_readme_text).grid(row=0, column=1, sticky="e")
 
-        body = ttk.Frame(parent)
+        body = ttk.Frame(parent, padding=14, style="Card.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(0, weight=1)
@@ -1742,6 +2380,84 @@ class App(tk.Tk):
         self.readme_text.delete("1.0", "end")
         self.readme_text.insert("1.0", text)
         self.readme_text.configure(state="disabled")
+
+    def show_dialog(self, title, message, kind="info"):
+        palette = self.palette
+        dialog = tk.Toplevel(self)
+        dialog.title(title)
+        dialog.transient(self)
+        dialog.resizable(False, False)
+        dialog.configure(bg=palette["window"])
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+
+        shell = tk.Frame(dialog, bg=palette["shadow"], padx=1, pady=1)
+        shell.pack(fill="both", expand=True, padx=18, pady=18)
+        body = tk.Frame(shell, bg=palette["surface"], padx=22, pady=20)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+
+        accent = {
+            "error": palette["danger"],
+            "warning": palette["warning"],
+            "success": palette["success"],
+            "info": palette["accent"],
+        }.get(kind, palette["accent"])
+        symbol = {
+            "error": "!",
+            "warning": "!",
+            "success": "",
+            "info": "i",
+        }.get(kind, "i")
+
+        icon = tk.Canvas(body, width=34, height=34, bg=palette["surface"], highlightthickness=0)
+        icon.grid(row=0, column=0, rowspan=2, sticky="n", padx=(0, 14))
+        icon.create_oval(2, 2, 32, 32, fill=accent, outline=accent)
+        if symbol:
+            icon.create_text(17, 17, text=symbol, fill=palette["accent_text"] if kind != "warning" else "#ffffff", font=("Segoe UI", 14, "bold"))
+        else:
+            icon.create_line(10, 18, 15, 23, 25, 11, fill="#ffffff", width=3, capstyle="round", joinstyle="round")
+
+        tk.Label(
+            body,
+            text=title,
+            bg=palette["surface"],
+            fg=palette["text"],
+            font=("Segoe UI", 12, "bold"),
+            anchor="w",
+        ).grid(row=0, column=1, sticky="ew")
+        tk.Label(
+            body,
+            text=message,
+            bg=palette["surface"],
+            fg=palette["muted"],
+            font=("Segoe UI", 10),
+            anchor="w",
+            justify="left",
+            wraplength=430,
+        ).grid(row=1, column=1, sticky="ew", pady=(8, 18))
+
+        button_row = ttk.Frame(body, style="InnerCard.TFrame")
+        button_row.grid(row=2, column=0, columnspan=2, sticky="e")
+        ttk.Button(button_row, text="OK", command=dialog.destroy, style="Accent.TButton").grid(row=0, column=0)
+
+        dialog.update_idletasks()
+        width = dialog.winfo_width()
+        height = dialog.winfo_height()
+        x = self.winfo_rootx() + max(0, int((self.winfo_width() - width) / 2))
+        y = self.winfo_rooty() + max(0, int((self.winfo_height() - height) / 2))
+        dialog.geometry(f"+{x}+{y}")
+        dialog.grab_set()
+        dialog.focus_force()
+        self.wait_window(dialog)
+
+    def show_info(self, title, message):
+        self.show_dialog(title, message, "info")
+
+    def show_warning(self, title, message):
+        self.show_dialog(title, message, "warning")
+
+    def show_error(self, title, message):
+        self.show_dialog(title, message, "error")
 
     def update_button_clicked(self):
         if self.manual_update_url:
@@ -1837,31 +2553,29 @@ class App(tk.Tk):
             if result.get("mode") == "exe" and result.get("script_path"):
                 self.update_button_text_var.set("Update startet...")
                 self.update_status_var.set("Update geladen. App wird neu gestartet...")
-                messagebox.showinfo("Update", result.get("message", "Update wurde geladen. Die App wird jetzt neu gestartet."))
+                self.show_info("Update", result.get("message", "Update wurde geladen. Die App wird jetzt neu gestartet."))
                 start_hidden_update_script(result["script_path"])
                 self.after(250, self.destroy)
             else:
                 self.update_button_text_var.set("Erneut pruefen")
                 self.update_status_var.set("Update fertig. App bitte neu starten.")
-                messagebox.showinfo("Update", "Update wurde geladen. Starte die App neu, damit die neue Version aktiv ist.")
+                self.show_info("Update", "Update wurde geladen. Starte die App neu, damit die neue Version aktiv ist.")
         else:
             self.update_button_text_var.set("Jetzt aktualisieren" if self.update_available else "Update pruefen")
             self.update_status_var.set("Update fehlgeschlagen.")
-            messagebox.showerror("Update fehlgeschlagen", message)
+            self.show_error("Update fehlgeschlagen", message)
 
     def build_valorant_tab(self, parent):
         parent.columnconfigure(0, weight=1)
 
-        status = ttk.LabelFrame(parent, text="Status", padding=12)
-        status.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        status = self.create_card(parent, 0, "Status")
         status.columnconfigure(1, weight=1)
         self.add_status_row(status, 0, "Bereich", self.region_var)
         self.add_status_row(status, 1, "Rot-Regel", self.red_settings_var)
         self.add_status_row(status, 2, "Monitoring", self.monitor_var)
         self.add_status_row(status, 3, "Erkannt", self.detected_var)
 
-        controls = ttk.LabelFrame(parent, text="Einrichten", padding=12)
-        controls.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        controls = self.create_card(parent, 1, "Einrichten")
         controls.columnconfigure(0, weight=1)
         controls.columnconfigure(1, weight=1)
         ttk.Button(controls, text="Bereich waehlen", command=self.select_valorant_region).grid(row=0, column=0, sticky="ew", padx=(0, 8))
@@ -1869,8 +2583,7 @@ class App(tk.Tk):
 
         self.build_media_section(parent, 2, "valorant")
 
-        settings = ttk.LabelFrame(parent, text="Optionen", padding=12)
-        settings.grid(row=3, column=0, sticky="ew", pady=(0, 12))
+        settings = self.create_card(parent, 3, "Optionen")
         for column in range(6):
             settings.columnconfigure(column, weight=1)
 
@@ -1882,7 +2595,7 @@ class App(tk.Tk):
         ttk.Entry(settings, textvariable=self.stable_var, width=8).grid(row=0, column=5, sticky="ew", padx=(4, 0))
 
         ttk.Label(settings, text="Farbe").grid(row=1, column=0, sticky="w", pady=(10, 0))
-        color_controls = ttk.Frame(settings)
+        color_controls = ttk.Frame(settings, style="InnerCard.TFrame")
         color_controls.grid(row=1, column=1, columnspan=3, sticky="ew", padx=(4, 12), pady=(10, 0))
         color_controls.columnconfigure(1, weight=1)
         self.valorant_color_swatch = tk.Label(color_controls, width=4, relief="solid", borderwidth=1)
@@ -1902,39 +2615,36 @@ class App(tk.Tk):
             row=3, column=3, columnspan=3, sticky="w"
         )
 
-        run = ttk.Frame(parent)
+        run = ttk.Frame(parent, style="Root.TFrame")
         run.grid(row=4, column=0, sticky="ew")
         for column in range(4):
             run.columnconfigure(column, weight=1)
 
-        ttk.Button(run, text="Start", command=self.start_valorant_monitoring).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        ttk.Button(run, text="Stop", command=lambda: self.stop_monitoring("valorant")).grid(row=0, column=1, sticky="ew", padx=4)
+        ttk.Button(run, text="Start", command=self.start_valorant_monitoring, style="Accent.TButton").grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ttk.Button(run, text="Stop", command=lambda: self.stop_monitoring("valorant"), style="Danger.TButton").grid(row=0, column=1, sticky="ew", padx=4)
         ttk.Button(run, text="Test Play", command=send_media_play).grid(row=0, column=2, sticky="ew", padx=4)
         ttk.Button(run, text="Test Pause", command=send_media_pause).grid(row=0, column=3, sticky="ew", padx=(8, 0))
 
-        log = ttk.Label(parent, textvariable=self.log_var, wraplength=680)
+        log = ttk.Label(parent, textvariable=self.log_var, wraplength=680, style="Log.TLabel")
         log.grid(row=5, column=0, sticky="ew", pady=(14, 0))
 
     def build_lol_tab(self, parent):
         parent.columnconfigure(0, weight=1)
 
-        status = ttk.LabelFrame(parent, text="Status", padding=12)
-        status.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        status = self.create_card(parent, 0, "Status")
         status.columnconfigure(1, weight=1)
         self.add_status_row(status, 0, "Bereich", self.lol_region_var)
         self.add_status_row(status, 1, "Zahl-Regel", self.lol_number_settings_var)
         self.add_status_row(status, 2, "Monitoring", self.lol_monitor_var)
         self.add_status_row(status, 3, "Erkannt", self.lol_detected_var)
 
-        controls = ttk.LabelFrame(parent, text="Einrichten", padding=12)
-        controls.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        controls = self.create_card(parent, 1, "Einrichten")
         controls.columnconfigure(0, weight=1)
         ttk.Button(controls, text="Bereich waehlen", command=self.select_lol_region).grid(row=0, column=0, sticky="ew")
 
         self.build_media_section(parent, 2, "lol")
 
-        settings = ttk.LabelFrame(parent, text="Optionen", padding=12)
-        settings.grid(row=3, column=0, sticky="ew", pady=(0, 12))
+        settings = self.create_card(parent, 3, "Optionen")
         for column in range(6):
             settings.columnconfigure(column, weight=1)
 
@@ -1965,17 +2675,17 @@ class App(tk.Tk):
             row=4, column=3, columnspan=3, sticky="w"
         )
 
-        run = ttk.Frame(parent)
+        run = ttk.Frame(parent, style="Root.TFrame")
         run.grid(row=4, column=0, sticky="ew")
         for column in range(4):
             run.columnconfigure(column, weight=1)
 
-        ttk.Button(run, text="Start", command=self.start_lol_monitoring).grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        ttk.Button(run, text="Stop", command=lambda: self.stop_monitoring("lol")).grid(row=0, column=1, sticky="ew", padx=4)
+        ttk.Button(run, text="Start", command=self.start_lol_monitoring, style="Accent.TButton").grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ttk.Button(run, text="Stop", command=lambda: self.stop_monitoring("lol"), style="Danger.TButton").grid(row=0, column=1, sticky="ew", padx=4)
         ttk.Button(run, text="Test Play", command=send_media_play).grid(row=0, column=2, sticky="ew", padx=4)
         ttk.Button(run, text="Test Pause", command=send_media_pause).grid(row=0, column=3, sticky="ew", padx=(8, 0))
 
-        log = ttk.Label(parent, textvariable=self.lol_log_var, wraplength=680)
+        log = ttk.Label(parent, textvariable=self.lol_log_var, wraplength=680, style="Log.TLabel")
         log.grid(row=5, column=0, sticky="ew", pady=(14, 0))
 
     def build_media_section(self, parent, row, game):
@@ -1985,8 +2695,7 @@ class App(tk.Tk):
         dead_volume_var = self.lol_dead_volume_var if is_lol else self.dead_volume_var
         alive_volume_var = self.lol_alive_volume_var if is_lol else self.alive_volume_var
 
-        media = ttk.LabelFrame(parent, text="Medienwiedergabe", padding=12)
-        media.grid(row=row, column=0, sticky="ew", pady=(0, 12))
+        media = self.create_card(parent, row, "Medienwiedergabe")
         for column in range(6):
             media.columnconfigure(column, weight=1)
 
@@ -2019,8 +2728,8 @@ class App(tk.Tk):
         )
 
     def add_status_row(self, parent, row, label, variable):
-        ttk.Label(parent, text=label + ":").grid(row=row, column=0, sticky="w", padx=(0, 10), pady=2)
-        ttk.Label(parent, textvariable=variable, wraplength=580).grid(row=row, column=1, sticky="w", pady=2)
+        ttk.Label(parent, text=label + ":", style="Muted.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 14), pady=4)
+        ttk.Label(parent, textvariable=variable, wraplength=680, style="Value.TLabel").grid(row=row, column=1, sticky="w", pady=4)
 
     def audio_keys_for_game(self, game):
         if game == "lol":
@@ -2168,7 +2877,7 @@ class App(tk.Tk):
             volume = audio_settings["dead_volume"] if is_dead else audio_settings["alive_volume"]
             changed = set_audio_session_volume(audio_settings["target_process"], volume)
         except Exception as exc:
-            messagebox.showerror("Lautstaerke pruefen", str(exc))
+            self.show_error("Lautstaerke pruefen", str(exc))
             return
 
         state_text = "tot" if is_dead else "nicht tot"
@@ -2218,7 +2927,7 @@ class App(tk.Tk):
         )
 
     def select_valorant_region(self):
-        messagebox.showinfo(
+        self.show_info(
             "Bereich waehlen",
             "Nach OK hast du 3 Sekunden, um Valorant sichtbar zu machen. Ziehe dann den Bereich, "
             "der ueberwacht werden soll.",
@@ -2227,7 +2936,7 @@ class App(tk.Tk):
         self.after(3000, lambda: self.open_region_selector("valorant"))
 
     def select_valorant_color(self):
-        messagebox.showinfo(
+        self.show_info(
             "Farbe waehlen",
             "Nach OK hast du 3 Sekunden, um Valorant sichtbar zu machen. Klicke dann direkt auf die rote Farbe, "
             "die als tot erkannt werden soll.",
@@ -2236,7 +2945,7 @@ class App(tk.Tk):
         self.after(3000, self.open_valorant_color_selector)
 
     def select_lol_region(self):
-        messagebox.showinfo(
+        self.show_info(
             "LoL-Bereich waehlen",
             "Nach OK hast du 3 Sekunden, um League of Legends sichtbar zu machen. Ziehe dann den Bereich, "
             "in dem die Zahl oder der Countdown erscheint.",
@@ -2312,7 +3021,7 @@ class App(tk.Tk):
         try:
             target_rgb = parse_rgb_input(self.valorant_color_entry_var.get())
         except ValueError as exc:
-            messagebox.showerror("Farbe speichern", str(exc))
+            self.show_error("Farbe speichern", str(exc))
             return
 
         self.config_data["valorant_target_rgb"] = list(target_rgb)
@@ -2408,30 +3117,30 @@ class App(tk.Tk):
 
     def start_valorant_monitoring(self):
         if self.monitor_is_running():
-            messagebox.showinfo("Laeuft schon", f"{self.active_monitor_name()} laeuft bereits. Stoppe es zuerst.")
+            self.show_info("Laeuft schon", f"{self.active_monitor_name()} laeuft bereits. Stoppe es zuerst.")
             return
         if not self.config_data.get("region"):
-            messagebox.showwarning("Fehlt", "Waehle zuerst einen Valorant-Bereich.")
+            self.show_warning("Fehlt", "Waehle zuerst einen Valorant-Bereich.")
             return
         try:
             self.sync_valorant_settings()
         except Exception as exc:
-            messagebox.showerror("Optionen pruefen", str(exc))
+            self.show_error("Optionen pruefen", str(exc))
             return
 
         self.start_monitor_thread("valorant", self.monitor_loop_valorant)
 
     def start_lol_monitoring(self):
         if self.monitor_is_running():
-            messagebox.showinfo("Laeuft schon", f"{self.active_monitor_name()} laeuft bereits. Stoppe es zuerst.")
+            self.show_info("Laeuft schon", f"{self.active_monitor_name()} laeuft bereits. Stoppe es zuerst.")
             return
         if not self.config_data.get("lol_region"):
-            messagebox.showwarning("Fehlt", "Waehle zuerst einen LoL-Bereich.")
+            self.show_warning("Fehlt", "Waehle zuerst einen LoL-Bereich.")
             return
         try:
             self.sync_lol_settings()
         except Exception as exc:
-            messagebox.showerror("Optionen pruefen", str(exc))
+            self.show_error("Optionen pruefen", str(exc))
             return
 
         self.start_monitor_thread("lol", self.monitor_loop_lol)
@@ -2625,5 +3334,12 @@ class App(tk.Tk):
 
 if __name__ == "__main__":
     set_dpi_awareness()
+    mutex_handle, is_running = create_single_instance_mutex()
+    if is_running:
+        sys.exit(0)
     app = App()
-    app.mainloop()
+    try:
+        app.mainloop()
+    finally:
+        if mutex_handle:
+            kernel32.CloseHandle(mutex_handle)

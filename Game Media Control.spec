@@ -5,7 +5,7 @@ a = Analysis(
     ['valorant_media_guard.py'],
     pathex=[],
     binaries=[],
-    datas=[('README.md', '.'), ('Gangcord.gif', '.'), ('logo der app.png', '.'), ('Erstaz Bild für das Gif.png', '.')],
+    datas=[('README.md', '.'), ('LICENSE.txt', '.'), ('Gangcord.gif', '.'), ('logo der app.png', '.'), ('Erstaz Bild für das Gif.png', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
